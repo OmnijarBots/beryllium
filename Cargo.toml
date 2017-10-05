@@ -5,4 +5,5 @@ authors = ["Ravi Shankar <wafflespeanut@gmail.com>"]
 
 [dependencies]
 cryptobox = { git = "https://github.com/wireapp/cryptobox", branch = "develop" }
+log = "0.3"
 proteus = { git = "https://github.com/wireapp/proteus", branch = "develop" }
