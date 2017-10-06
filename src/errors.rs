@@ -13,6 +13,7 @@ pub enum BerylliumError {
     CBox(CBoxError<FileStore>),
     Encode(EncodeError),
     Decode(DecodeError),
+    PemFileError,
 }
 
 impl Display for BerylliumError {
@@ -22,6 +23,7 @@ impl Display for BerylliumError {
             BerylliumError::Io(ref e)     => write!(f, "I/O error: {}", e),
             BerylliumError::Encode(ref e) => write!(f, "Encode error: {}", e),
             BerylliumError::Decode(ref e) => write!(f, "Decode error: {}", e),
+            BerylliumError::PemFileError  => f.write_str("PEM file error"),
         }
     }
 }
@@ -37,6 +39,7 @@ impl Error for BerylliumError {
             BerylliumError::Io(ref e)     => Some(e),
             BerylliumError::Decode(ref e) => Some(e),
             BerylliumError::Encode(ref e) => Some(e),
+            _ => None,
         }
     }
 }

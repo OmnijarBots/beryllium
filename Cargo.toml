@@ -6,9 +6,17 @@ build = "build.rs"
 
 [dependencies]
 cryptobox = { git = "https://github.com/wireapp/cryptobox", branch = "develop" }
+futures = "0.1"
+hyper = "0.11"
 log = "0.3"
 proteus = { git = "https://github.com/wireapp/proteus", branch = "develop" }
 protobuf = "1.4"
+rustls = "0.11"
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = "1.0"
+tokio-rustls = { version = "0.4", features = ["tokio-proto"] }
+tokio-proto = "0.1"
 
 [build-dependencies]
 protoc-rust = "1.4"
