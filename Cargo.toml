@@ -2,8 +2,13 @@
 name = "beryllium"
 version = "0.1.0"
 authors = ["Ravi Shankar <wafflespeanut@gmail.com>"]
+build = "build.rs"
 
 [dependencies]
 cryptobox = { git = "https://github.com/wireapp/cryptobox", branch = "develop" }
 log = "0.3"
 proteus = { git = "https://github.com/wireapp/proteus", branch = "develop" }
+protobuf = "1.4"
+
+[build-dependencies]
+protoc-rust = "1.4"
