@@ -1,6 +1,14 @@
 // FIXME: Check the types for id (String), i32, etc.
 // which are too generic
 
+pub enum Event {
+    ConversationMemberJoin,
+    ConversationMemberLeave,
+    ConversationRename,
+    Message,
+    Image,
+}
+
 #[derive(Deserialize)]
 pub struct Member {
     pub id: String,

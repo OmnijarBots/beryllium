@@ -1,10 +1,10 @@
-use base64;
+use {base64, utils};
 use cryptobox::CBox;
 use cryptobox::store::file::FileStore;
 use errors::BerylliumResult;
 use proteus::keys::PreKeyId;
 use std::{fs, iter, u16};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use types::EncodedPreKey;
 
 pub struct OtrManager {
@@ -14,8 +14,8 @@ pub struct OtrManager {
 }
 
 impl OtrManager {
-    pub fn new<P: AsRef<Path>>(path: P, id: &str) -> BerylliumResult<Self> {
-        let mut path = PathBuf::from(path.as_ref());
+    pub fn new(id: &str) -> BerylliumResult<Self> {
+        let mut path = utils::get_store_path();
         path.push(id);
         if !path.is_dir() {
             info!("Creating {}", path.display());

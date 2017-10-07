@@ -1,35 +1,19 @@
 use errors::{BerylliumError, BerylliumResult};
+use handlers::BotHandler;
 use hyper::server::Http;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls::internal::pemfile;
 use std::fs::File;
 use std::io::BufReader;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::path::Path;
 use std::sync::Arc;
 use tokio_rustls::proto::Server;
 use tokio_proto::TcpServer;
-
-pub struct BotHandler {
-    path: Rc<PathBuf>,
-    auth: String,
-}
-
-impl BotHandler {
-    pub fn path(&self) -> Rc<PathBuf> {
-        self.path.clone()
-    }
-
-    pub fn check_auth(&self, auth: &str) -> bool {
-        self.auth == auth
-    }
-}
+use utils;
 
 pub struct BotService {
-    path: PathBuf,
-    auth: String,
-    config: Arc<ServerConfig>,
+    config: ServerConfig,
 }
 
 impl BotService {
@@ -66,20 +50,17 @@ impl BotService {
         let key = Self::load_private_key(key_path)?;
         let mut tls_config = ServerConfig::new();
         tls_config.set_single_cert(certs, key);
+        utils::set_auth_token(auth);
+        utils::set_store_path(store_path);
 
         Ok(BotService {
-            path: PathBuf::from(store_path.as_ref()),
-            auth: auth,
-            config: Arc::new(tls_config),
+            config: tls_config,
         })
     }
 
     pub fn start_listening(self, addr: &SocketAddr) {
-        let https_server = Server::new(Http::new(), self.config.clone());
+        let https_server = Server::new(Http::new(), Arc::new(self.config));
         let tcp_server = TcpServer::new(https_server, addr.clone());
-        tcp_server.serve(move || Ok(BotHandler {
-            path: Rc::new(self.path.clone()),
-            auth: self.auth.clone(),
-        }))
+        tcp_server.serve(|| Ok(BotHandler))
     }
 }
