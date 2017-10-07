@@ -1,12 +1,15 @@
+use errors::{BerylliumError, BerylliumResult};
 use futures::{Future, Stream};
 use futures::future;
-use hyper::{Method, Error as HyperError, StatusCode};
+use hyper::{Body, Error as HyperError, Method, StatusCode};
 use hyper::header::{Authorization, Bearer, ContentLength};
 use hyper::server::{Service, Request, Response};
+use otr_manager::OtrManager;
 use serde_json;
 use service::BotHandler;
 use std::path::PathBuf;
 use std::rc::Rc;
+use types::{BotCreationData, BotCreationResponse};
 
 impl Service for BotHandler {
     type Request = Request;
@@ -19,12 +22,16 @@ impl Service for BotHandler {
         let mut resp = Response::new();
         let (method, uri, _version, headers, body) = req.deconstruct();
 
-        if method != Method::Post {
+        if method != Method::Post {     // only allow POST
             resp.set_status(StatusCode::MethodNotAllowed);
-        } else {
+            return Box::new(future::ok(resp))
+        } else {        // all requests should have Bearer token auth
             match headers.get::<Authorization<Bearer>>() {
                 Some(header) if self.check_auth(&header.to_string()[7..]) => (),
-                _ => resp.set_status(StatusCode::Unauthorized)
+                _ => {
+                    resp.set_status(StatusCode::Unauthorized);
+                    return Box::new(future::ok(resp))
+                }
             }
         }
 
@@ -40,7 +47,17 @@ impl Service for BotHandler {
                     future::ok::<_, Self::Error>(acc)
                 }).map(|vec| {
                     if let Ok(value) = serde_json::from_slice(&vec) {
-                        $call(value, &mut resp, store_path);
+                        let result = $call(value, store_path, &mut resp).and_then(|v| {
+                            serde_json::to_vec(&v).map_err(BerylliumError::from)
+                        });
+
+                        match result {
+                            Ok(bytes) => resp.set_body(Body::from(bytes)),
+                            Err(e) => {
+                                error!("{}", e);
+                                resp.set_status(StatusCode::InternalServerError);
+                            },
+                        }
                     } else {
                         resp.set_status(StatusCode::BadRequest);
                     }
@@ -54,15 +71,28 @@ impl Service for BotHandler {
 
         match (method, uri.path()) {
             (Method::Post, "/bots") => {
-                return parse_json_and!(create_bot)
+                parse_json_and!(create_bot)
             },
-            _ => resp.set_status(StatusCode::NotFound),
+            _ => Box::new(future::ok(resp.with_status(StatusCode::NotFound))),
         }
-
-        Box::new(future::ok(resp))
     }
 }
 
-fn create_bot(data: serde_json::Value, resp: &mut Response, path: Rc<PathBuf>) {
-    resp.set_status(StatusCode::Ok)
+fn create_bot(data: BotCreationData, path: Rc<PathBuf>, resp: &mut Response)
+              -> BerylliumResult<BotCreationResponse>
+{
+    info!("Creating new bot...");
+
+    let otr = OtrManager::new(&*path, &data.id)?;
+    let mut prekeys = otr.initialize(data.conversation.members.len())?;
+    // There will always be a final prekey corresponding to u16::MAX
+    let final_key = prekeys.pop().unwrap();
+
+    let data = BotCreationResponse {
+        prekeys: prekeys,
+        last_prekey: final_key,
+    };
+
+    resp.set_status(StatusCode::Created);
+    Ok(data)
 }

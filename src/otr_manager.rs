@@ -1,10 +1,11 @@
+use base64;
 use cryptobox::CBox;
 use cryptobox::store::file::FileStore;
 use errors::BerylliumResult;
-use proteus::keys::{PreKeyBundle, PreKeyId};
-use std::fs;
+use proteus::keys::PreKeyId;
+use std::{fs, iter, u16};
 use std::path::{Path, PathBuf};
-use std::u16;
+use types::EncodedPreKey;
 
 pub struct OtrManager {
     path: PathBuf,
@@ -28,14 +29,18 @@ impl OtrManager {
         })
     }
 
-    pub fn initialize(&self, keys: usize) -> BerylliumResult<Vec<PreKeyBundle>> {
+    pub fn initialize(&self, keys: usize) -> BerylliumResult<Vec<EncodedPreKey>> {
         let mut vec = Vec::with_capacity(8 * keys + 1);
-        for i in 0..8 * keys {
-            let key = self.cbox.new_prekey(PreKeyId::new(i as u16))?;
-            vec.push(key);
+        for i in (0..8 * (keys as u16)).chain(iter::once(u16::MAX)) {
+            let key = self.cbox.new_prekey(PreKeyId::new(i))?;
+            let encoded = EncodedPreKey {
+                id: i,
+                key: base64::encode(&key.serialise()?)
+            };
+
+            vec.push(encoded);
         }
 
-        vec.push(self.cbox.new_prekey(PreKeyId::new(u16::MAX))?);
         Ok(vec)
     }
 }

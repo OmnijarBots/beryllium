@@ -5,12 +5,14 @@ authors = ["Ravi Shankar <wafflespeanut@gmail.com>"]
 build = "build.rs"
 
 [dependencies]
+base64 = "0.7"
 cryptobox = { git = "https://github.com/wireapp/cryptobox", branch = "develop" }
 futures = "0.1"
 hyper = "0.11"
 log = "0.3"
 proteus = { git = "https://github.com/wireapp/proteus", branch = "develop" }
 protobuf = "1.4"
+reqwest = "0.8"
 rustls = "0.11"
 serde = "1.0"
 serde_derive = "1.0"
