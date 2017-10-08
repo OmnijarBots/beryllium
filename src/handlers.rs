@@ -6,7 +6,7 @@ use futures::future;
 use hyper::{Body, Error as HyperError, Method, StatusCode};
 use hyper::header::{Authorization, Bearer, ContentLength};
 use hyper::server::{Service, Request, Response};
-use otr_manager::OtrManager;
+use storage::StorageManager;
 use std::sync::Arc;
 use types::{BotCreationData, BotCreationResponse, EventData};
 
@@ -91,11 +91,12 @@ fn create_bot<H>(data: BotCreationData, resp: &mut Response, _handler: Arc<H>)
     where H: Handler
 {
     info!("Creating new bot...");
-    let otr = OtrManager::new(&data.id)?;
-    let mut prekeys = otr.initialize(data.conversation.members.len())?;
+    let storage = StorageManager::new(&data.id)?;
+    let mut prekeys = storage.initialize_prekeys(data.conversation.members.len())?;
     // There will always be a final prekey corresponding to u16::MAX
     let final_key = prekeys.pop().unwrap();
 
+    let _ = storage.save_state(&data);
     let data = BotCreationResponse {
         prekeys: prekeys,
         last_prekey: final_key,

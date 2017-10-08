@@ -18,8 +18,8 @@ extern crate tokio_proto;
 mod client;
 mod errors;
 mod handlers;
-mod otr_manager;
 mod service;
+mod storage;
 mod types;
 mod utils;
 

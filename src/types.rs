@@ -14,26 +14,26 @@ pub struct EventData {
     pub event: Event,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct Member {
     pub id: String,
     pub status: i32,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct Conversation {
     pub id: String,
     pub members: Vec<Member>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct Origin {
     pub id: String,
     pub name: String,
     pub accent_id: i32,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct BotCreationData {
     pub id: String,
     pub client: String,
