@@ -4,12 +4,9 @@ use cryptobox::store::file::FileStore;
 use errors::BerylliumResult;
 use proteus::keys::PreKeyId;
 use std::{fs, iter, u16};
-use std::path::PathBuf;
 use types::EncodedPreKey;
 
 pub struct OtrManager {
-    path: PathBuf,
-    bot_id: String,
     cbox: CBox<FileStore>,
 }
 
@@ -24,8 +21,6 @@ impl OtrManager {
 
         Ok(OtrManager {
             cbox: CBox::file_open(&path)?,
-            path: path,
-            bot_id: id.to_owned(),
         })
     }
 

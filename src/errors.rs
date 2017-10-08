@@ -1,6 +1,7 @@
 use cryptobox::CBoxError;
 use cryptobox::store::file::FileStore;
 use proteus::{DecodeError, EncodeError};
+use reqwest::Error as ReqwestError;
 use serde_json::error::Error as SerdeError;
 use std::error::Error;
 use std::fmt::{self, Display};
@@ -15,6 +16,7 @@ pub enum BerylliumError {
     Encode(EncodeError),
     Decode(DecodeError),
     PemFileError,
+    Reqwest(ReqwestError),
     Serde(SerdeError),
 }
 
@@ -26,6 +28,7 @@ impl Display for BerylliumError {
             BerylliumError::Encode(ref e) => write!(f, "Encode error: {}", e),
             BerylliumError::Decode(ref e) => write!(f, "Decode error: {}", e),
             BerylliumError::PemFileError  => f.write_str("PEM file error"),
+            BerylliumError::Reqwest(ref e) => write!(f, "Reqwest error: {}", e),
             BerylliumError::Serde(ref e) => write!(f, "Serde error: {}", e),
         }
     }
@@ -38,11 +41,12 @@ impl Error for BerylliumError {
 
     fn cause(&self) -> Option<&Error> {
         match *self {
-            BerylliumError::CBox(ref e)   => Some(e),
-            BerylliumError::Io(ref e)     => Some(e),
-            BerylliumError::Decode(ref e) => Some(e),
-            BerylliumError::Encode(ref e) => Some(e),
-            BerylliumError::Serde(ref e) => Some(e),
+            BerylliumError::CBox(ref e)    => Some(e),
+            BerylliumError::Io(ref e)      => Some(e),
+            BerylliumError::Decode(ref e)  => Some(e),
+            BerylliumError::Encode(ref e)  => Some(e),
+            BerylliumError::Reqwest(ref e) => Some(e),
+            BerylliumError::Serde(ref e)   => Some(e),
             _ => None,
         }
     }
@@ -69,6 +73,12 @@ impl From<EncodeError> for BerylliumError {
 impl From<CBoxError<FileStore>> for BerylliumError {
     fn from(e: CBoxError<FileStore>) -> BerylliumError {
         BerylliumError::CBox(e)
+    }
+}
+
+impl From<ReqwestError> for BerylliumError {
+    fn from(e: ReqwestError) -> BerylliumError {
+        BerylliumError::Reqwest(e)
     }
 }
 

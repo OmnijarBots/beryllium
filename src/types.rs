@@ -9,6 +9,11 @@ pub enum Event {
     Image,
 }
 
+pub struct EventData {
+    pub bot_id: String,
+    pub event: Event,
+}
+
 #[derive(Deserialize)]
 pub struct Member {
     pub id: String,
@@ -18,7 +23,7 @@ pub struct Member {
 #[derive(Deserialize)]
 pub struct Conversation {
     pub id: String,
-    pub members: Vec<Member>
+    pub members: Vec<Member>,
 }
 
 #[derive(Deserialize)]

@@ -1,5 +1,5 @@
 use errors::{BerylliumError, BerylliumResult};
-use handlers::BotHandler;
+use handlers::{BotHandler, Handler};
 use hyper::server::Http;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls::internal::pemfile;
@@ -58,9 +58,14 @@ impl BotService {
         })
     }
 
-    pub fn start_listening(self, addr: &SocketAddr) {
+    pub fn start_listening<H>(self, addr: &SocketAddr, handler: H)
+        where H: Handler
+    {
         let https_server = Server::new(Http::new(), Arc::new(self.config));
         let tcp_server = TcpServer::new(https_server, addr.clone());
-        tcp_server.serve(|| Ok(BotHandler))
+        let handler = Arc::new(handler);
+        tcp_server.serve(move || Ok(BotHandler {
+            handler: handler.clone(),
+        }))
     }
 }

@@ -9,6 +9,7 @@ extern crate proteus;
 extern crate protobuf;
 extern crate reqwest;
 extern crate rustls;
+extern crate serde;
 #[macro_use] extern crate serde_derive;
 extern crate serde_json;
 extern crate tokio_rustls;
@@ -24,4 +25,6 @@ mod utils;
 
 include!(concat!(env!("OUT_DIR"), "/messages.rs"));
 
+pub use handlers::Handler;
 pub use service::BotService;
+pub use types::{Event, EventData};

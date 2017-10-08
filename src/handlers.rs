@@ -1,4 +1,5 @@
 use {serde_json, utils};
+use client::BotClient;
 use errors::{BerylliumError, BerylliumResult};
 use futures::{Future, Stream};
 use futures::future;
@@ -6,11 +7,21 @@ use hyper::{Body, Error as HyperError, Method, StatusCode};
 use hyper::header::{Authorization, Bearer, ContentLength};
 use hyper::server::{Service, Request, Response};
 use otr_manager::OtrManager;
-use types::{BotCreationData, BotCreationResponse};
+use std::sync::Arc;
+use types::{BotCreationData, BotCreationResponse, EventData};
 
-pub struct BotHandler;
+// FIXME: Figure out how to async with futures...
+pub trait Handler: Send + Sync + 'static {
+    fn handle(&self, data: EventData, client: BotClient);
+}
 
-impl Service for BotHandler {
+pub struct BotHandler<H> {
+    pub handler: Arc<H>,
+}
+
+impl<H> Service for BotHandler<H>
+    where H: Handler
+{
     type Request = Request;
     type Response = Response;
     type Error = HyperError;
@@ -40,12 +51,13 @@ impl Service for BotHandler {
                     bytes = Vec::with_capacity(**len as usize);
                 }
 
+                let handler = self.handler.clone();
                 let f = body.fold(bytes, |mut acc, ref chunk| {
                     acc.extend_from_slice(chunk);
                     future::ok::<_, Self::Error>(acc)
                 }).map(|vec| {
                     if let Ok(value) = serde_json::from_slice(&vec) {
-                        let result = $call(value, &mut resp).and_then(|v| {
+                        let result = $call(value, &mut resp, handler).and_then(|v| {
                             serde_json::to_vec(&v).map_err(BerylliumError::from)
                         });
 
@@ -67,20 +79,18 @@ impl Service for BotHandler {
             }};
         }
 
-        match (method, uri.path()) {
-            (Method::Post, "/bots") => {
-                parse_json_and!(create_bot)
-            },
+        match uri.path() {
+            "/bots" => parse_json_and!(create_bot),
             _ => Box::new(future::ok(resp.with_status(StatusCode::NotFound))),
         }
     }
 }
 
-fn create_bot(data: BotCreationData, resp: &mut Response)
-              -> BerylliumResult<BotCreationResponse>
+fn create_bot<H>(data: BotCreationData, resp: &mut Response, _handler: Arc<H>)
+                -> BerylliumResult<BotCreationResponse>
+    where H: Handler
 {
     info!("Creating new bot...");
-
     let otr = OtrManager::new(&data.id)?;
     let mut prekeys = otr.initialize(data.conversation.members.len())?;
     // There will always be a final prekey corresponding to u16::MAX
