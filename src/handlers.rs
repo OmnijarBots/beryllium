@@ -1,6 +1,6 @@
 use {serde_json, utils};
 use client::BotClient;
-use errors::{BerylliumError, BerylliumResult};
+use errors::BerylliumResult;
 use futures::{Future, Stream};
 use futures::future;
 use hyper::{Body, Error as HyperError, Method, StatusCode};
@@ -8,7 +8,7 @@ use hyper::header::{Authorization, Bearer, ContentLength};
 use hyper::server::{Service, Request, Response};
 use storage::StorageManager;
 use std::sync::Arc;
-use types::{BotCreationData, BotCreationResponse, EventData};
+use types::{BotCreationData, BotCreationResponse, EventData, MessageData};
 
 // FIXME: Figure out how to async with futures...
 pub trait Handler: Send + Sync + 'static {
@@ -19,9 +19,7 @@ pub struct BotHandler<H> {
     pub handler: Arc<H>,
 }
 
-impl<H> Service for BotHandler<H>
-    where H: Handler
-{
+impl<H> Service for BotHandler<H> where H: Handler {
     type Request = Request;
     type Response = Response;
     type Error = HyperError;
@@ -45,28 +43,21 @@ impl<H> Service for BotHandler<H>
         }
 
         macro_rules! parse_json_and {
-            ($call:expr) => {{
+            ($call:expr $( , $arg:expr )*) => {{
                 let mut bytes = vec![];
                 if let Some(len) = headers.get::<ContentLength>() {
                     bytes = Vec::with_capacity(**len as usize);
                 }
 
-                let handler = self.handler.clone();
+                // FIXME: Prone to DDoS
                 let f = body.fold(bytes, |mut acc, ref chunk| {
                     acc.extend_from_slice(chunk);
                     future::ok::<_, Self::Error>(acc)
                 }).map(|vec| {
                     if let Ok(value) = serde_json::from_slice(&vec) {
-                        let result = $call(value, &mut resp, handler).and_then(|v| {
-                            serde_json::to_vec(&v).map_err(BerylliumError::from)
-                        });
-
-                        match result {
-                            Ok(bytes) => resp.set_body(Body::from(bytes)),
-                            Err(e) => {
-                                error!("{}", e);
-                                resp.set_status(StatusCode::InternalServerError);
-                            },
+                        if let Err(e) = $call($( $arg, )* value, &mut resp) {
+                            error!("{}", e);
+                            resp.set_status(StatusCode::InternalServerError);
                         }
                     } else {
                         resp.set_status(StatusCode::BadRequest);
@@ -79,17 +70,26 @@ impl<H> Service for BotHandler<H>
             }};
         }
 
-        match uri.path() {
-            "/bots" => parse_json_and!(create_bot),
-            _ => Box::new(future::ok(resp.with_status(StatusCode::NotFound))),
+        let rel_url = uri.path();
+        let mut split = rel_url.split('/');
+
+        if rel_url == "/bots" {
+            parse_json_and!(create_bot)
+        } else {    // PATH: /bots/:bot_id/messages
+            match (split.next(), split.next(), split.next(), split.next(), split.next()) {
+                (Some(""), Some("bots"), Some(id), Some("messages"), None) => {
+                    let handler = self.handler.clone();
+                    let bot_id = String::from(id);
+                    parse_json_and!(handle_messages, bot_id, handler)
+                },
+                _ => Box::new(future::ok(resp.with_status(StatusCode::NotFound))),
+            }
         }
     }
 }
 
-fn create_bot<H>(data: BotCreationData, resp: &mut Response, _handler: Arc<H>)
-                -> BerylliumResult<BotCreationResponse>
-    where H: Handler
-{
+fn create_bot(data: BotCreationData, resp: &mut Response)
+             -> BerylliumResult<()> {
     info!("Creating new bot...");
     let storage = StorageManager::new(&data.id)?;
     let mut prekeys = storage.initialize_prekeys(data.conversation.members.len())?;
@@ -102,6 +102,17 @@ fn create_bot<H>(data: BotCreationData, resp: &mut Response, _handler: Arc<H>)
         last_prekey: final_key,
     };
 
+    let bytes = serde_json::to_vec(&data)?;
+    resp.set_body(Body::from(bytes));
     resp.set_status(StatusCode::Created);
-    Ok(data)
+    Ok(())
+}
+
+fn handle_messages<H>(bot_id: String, handler: Arc<H>,
+                      data: MessageData, resp: &mut Response)
+                     -> BerylliumResult<()>
+    where H: Handler
+{
+    resp.set_status(StatusCode::Ok);
+    Ok(())
 }

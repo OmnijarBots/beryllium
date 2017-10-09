@@ -1,3 +1,5 @@
+use serde::de::{Deserialize, Deserializer, Error as DecodeError};
+use serde_json::Value;
 // FIXME: Check the types for id (String), i32, etc.
 // which are too generic
 
@@ -41,6 +43,57 @@ pub struct BotCreationData {
     pub conversation: Conversation,
     pub token: String,
     pub locale: String,
+}
+
+pub enum ConversationEventType {
+    MessageAdd,
+    MemberJoin,
+    MemberLeave,
+    Rename,
+}
+
+fn deserialize_conv_event_type<'de, D>(de: D) -> Result<ConversationEventType, D::Error>
+    where D: Deserializer<'de>
+{
+    let deser_result: Value = Deserialize::deserialize(de)?;
+    match deser_result {
+        Value::String(ref s) if s == "conversation.otr-message-add"
+            => Ok(ConversationEventType::MessageAdd),
+        Value::String(ref s) if s == "conversation.member-join"
+            => Ok(ConversationEventType::MemberJoin),
+        Value::String(ref s) if s == "conversation.member-leave"
+            => Ok(ConversationEventType::MemberLeave),
+        Value::String(ref s) if s == "conversation.rename"
+            => Ok(ConversationEventType::Rename),
+        _ => Err(DecodeError::custom("Unexpected value for ConversationEventType")),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum ConversationData {
+    MessageAdd {
+        sender: String,
+        recipient: String,
+        text: String,
+    },
+    LeavingOrJoiningMembers {
+        user_ids: Vec<String>,
+    },
+    Rename {
+        name: String,
+    }
+}
+
+#[derive(Deserialize)]
+pub struct MessageData {
+    #[serde(rename = "type")]
+    #[serde(deserialize_with = "deserialize_conv_event_type")]
+    pub type_: ConversationEventType,
+    pub conversation: String,
+    pub from: String,
+    pub data: ConversationData,
+    pub time: String,
 }
 
 #[derive(Serialize)]
