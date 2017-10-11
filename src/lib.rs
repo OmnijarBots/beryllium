@@ -26,6 +26,7 @@ mod utils;
 
 include!(concat!(env!("OUT_DIR"), "/messages.rs"));
 
+pub use client::BotClient;
 pub use handlers::Handler;
 pub use service::BotService;
 pub use types::{Event, EventData};

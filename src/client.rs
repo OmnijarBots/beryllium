@@ -1,27 +1,28 @@
 use errors::{BerylliumError, BerylliumResult};
 use hyper::Method;
 use hyper::header::{Authorization, Bearer, ContentType, Headers};
-use reqwest::{Client, Response};
+use reqwest::{Client, Response, StatusCode};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 const HOST_ADDRESS: &'static str = "https://prod-nginz-https.wire.com";
 
 #[derive(Clone)]
-pub struct BotClient {
+pub struct HttpsClient {
     bot_id: String,
     headers: Headers,
     client: Client,
 }
 
-impl BotClient {
-    pub fn new<S: Into<String>>(id: S, token: S) -> BotClient {
+impl HttpsClient {
+    pub fn new<S: Into<String>>(id: S, token: S) -> HttpsClient {
         let mut headers = Headers::new();
         headers.set(ContentType::json());
         headers.set(Authorization(Bearer {
             token: token.into(),
         }));
 
-        BotClient {
+        HttpsClient {
             bot_id: id.into(),
             client: Client::new(),
             headers: headers,
@@ -46,5 +47,29 @@ impl BotClient {
         }
 
         request.send().map_err(BerylliumError::from)
+    }
+
+    pub fn send_message<T, R>(&self, data: T, ignore_missing: bool)
+                             -> BerylliumResult<(R, StatusCode)>
+        where T: Serialize, R: DeserializeOwned
+    {
+        let url = format!("/bot/messages?ignore_missing={}", ignore_missing);
+        let mut resp = self.request(Method::Post, &url, Some(data), None)?;
+        let json = resp.json()?;
+        Ok((json, resp.status()))
+    }
+}
+
+// Another client for isolating internal methods from user methods.
+#[derive(Clone)]
+pub struct BotClient {
+    inner: HttpsClient,
+}
+
+impl From<HttpsClient> for BotClient {
+    fn from(client: HttpsClient) -> BotClient {
+        BotClient {
+            inner: client,
+        }
     }
 }

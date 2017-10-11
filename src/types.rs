@@ -1,6 +1,7 @@
-use client::BotClient;
+use client::HttpsClient;
 use serde::de::{Deserialize, Deserializer, Error as DecodeError};
 use serde_json::Value;
+use std::collections::HashMap;
 use storage::StorageManager;
 // FIXME: Check the types for id (String), i32, etc.
 // which are too generic
@@ -11,8 +12,7 @@ pub enum Event {
         conversation: Conversation,
     },
     ConversationRename {
-        old: String,
-        new: String,
+        conversation: Conversation,
     },
     Message,
     Image,
@@ -55,13 +55,20 @@ pub struct BotCreationData {
     pub locale: String,
 }
 
+#[derive(Deserialize)]
+pub struct Devices {
+    // UserID -> [ClientID]
+    missing: HashMap<String, Vec<String>>
+}
+
 pub struct BotData {
     pub storage: StorageManager,
     pub data: BotCreationData,
-    pub client: BotClient,
+    pub client: HttpsClient,
+    pub devices: Option<Devices>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum ConversationEventType {
     MessageAdd,
     MemberJoin,

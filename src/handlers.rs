@@ -1,5 +1,5 @@
 use {serde_json, utils};
-use client::BotClient;
+use client::{BotClient, HttpsClient};
 use errors::{BerylliumError, BerylliumResult};
 use futures::{Future, Stream};
 use futures::future;
@@ -24,7 +24,6 @@ pub trait Handler: Send + Sync + 'static {
 
 // FIXME: I *know* that Arc has an overhead, but I'm not entirely
 // sure about the performance impact of this in our case (i.e., HTTP requests)
-// For now, this works.
 pub struct BotHandler<H> {
     handler: Arc<H>,
     pool: Arc<CpuPool>,
@@ -140,30 +139,43 @@ fn handle_messages<H>(pool: Arc<CpuPool>,
     where H: Handler
 {
     // NOTE: parking_lot's Mutex is suitable for fine-grained locks, so we
-    // check (and possibly refresh) the data and release it immediately.
-    // We do this a lot below.
+    // acquire the lock, check (and possibly refresh) the data and release it
+    // immediately. We do this a lot below.
 
-    {
+    let has_devices = {
         if bot_data.lock().get(&bot_id).is_none() {
             let storage = StorageManager::new(&bot_id)?;
             let store_data: BotCreationData = storage.load_state()?;
-            let client = BotClient::new(bot_id.as_str(),
-                                        store_data.token.as_str());
+            let client = HttpsClient::new(bot_id.as_str(),
+                                          store_data.token.as_str());
             bot_data.lock().insert(bot_id.clone(), BotData {
                 storage: storage,
                 data: store_data,
                 client: client,
+                devices: None,
             });
-        }
 
-        // FIXME: Get devices
+            false
+        } else {
+            bot_data.lock().get(&bot_id)
+                    .and_then(|ref d| d.devices.as_ref()).is_some()
+        }
+    };
+
+    if !has_devices {
+        //
     }
 
     // TODO:
     // - Isolate events into their own functions.
-    // - Revisit `clone` usage.
-    let event = match (&data.type_, &data.data) {
-        (&ConversationEventType::MemberLeave,
+    // - Revisit `clone` usage on various types.
+    let event = match (data.type_, &data.data) {
+        // (&ConversationEventType::MemberJoin,
+        //  &ConversationData::LeavingOrJoiningMembers { ref user_ids }) => {
+
+        // },
+
+        (ConversationEventType::MemberLeave,
          &ConversationData::LeavingOrJoiningMembers { ref user_ids }) => {
             let (conversation, client) = {
                 let mut lock = bot_data.lock();
@@ -176,7 +188,7 @@ fn handle_messages<H>(pool: Arc<CpuPool>,
                 (old_data.data.conversation.clone(), old_data.client.clone())
             };
 
-            // If bot has left, then remove entire data
+            // If our bot has left, then remove the entire data.
             if user_ids.iter().find(|&id| id == &bot_id).is_some() {
                 bot_data.lock().remove(&bot_id).unwrap();
             }
@@ -187,19 +199,18 @@ fn handle_messages<H>(pool: Arc<CpuPool>,
             }, client))
         },
 
-        (&ConversationEventType::Rename,
+        (ConversationEventType::Rename,
          &ConversationData::Rename { ref name }) => {
-            let (old, new, client) = {
+            let (conversation, client) = {
                 let mut lock = bot_data.lock();
                 let old_data = lock.get_mut(&bot_id).unwrap();
-                let old_name = (*old_data).data.conversation.name.clone();
                 old_data.data.conversation.name = name.clone();
-                (old_name, name.clone(), old_data.client.clone())
+                (old_data.data.conversation.clone(), old_data.client.clone())
             };
 
             Some((EventData {
                 bot_id: bot_id,
-                event: Event::ConversationRename { old, new },
+                event: Event::ConversationRename { conversation },
             }, client))
         },
 
@@ -211,7 +222,7 @@ fn handle_messages<H>(pool: Arc<CpuPool>,
 
     if let Some((event_data, client)) = event {
         let _ = pool.spawn_fn(move || {
-            handler.handle(event_data, client)
+            handler.handle(event_data, client.into())
         });
     }
 
