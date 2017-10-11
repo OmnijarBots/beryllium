@@ -7,7 +7,9 @@ use storage::StorageManager;
 
 pub enum Event {
     ConversationMemberJoin,
-    ConversationMemberLeave,
+    ConversationMemberLeave {
+        conversation: Conversation,
+    },
     ConversationRename {
         old: String,
         new: String,
@@ -21,12 +23,14 @@ pub struct EventData {
     pub event: Event,
 }
 
+#[derive(Clone)]
 #[derive(Deserialize, Serialize)]
 pub struct Member {
     pub id: String,
     pub status: i32,
 }
 
+#[derive(Clone)]
 #[derive(Deserialize, Serialize)]
 pub struct Conversation {
     pub id: String,
@@ -57,6 +61,7 @@ pub struct BotData {
     pub client: BotClient,
 }
 
+#[derive(Debug)]
 pub enum ConversationEventType {
     MessageAdd,
     MemberJoin,
@@ -81,7 +86,7 @@ fn deserialize_conv_event_type<'de, D>(de: D) -> Result<ConversationEventType, D
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum ConversationData {
     MessageAdd {

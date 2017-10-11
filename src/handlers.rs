@@ -22,6 +22,9 @@ pub trait Handler: Send + Sync + 'static {
     fn handle(&self, data: EventData, client: BotClient) -> Self::Future;
 }
 
+// FIXME: I *know* that Arc has an overhead, but I'm not entirely
+// sure about the performance impact of this in our case (i.e., HTTP requests)
+// For now, this works.
 pub struct BotHandler<H> {
     handler: Arc<H>,
     pool: Arc<CpuPool>,
@@ -110,8 +113,7 @@ impl<H: Handler> Service for BotHandler<H> {
     }
 }
 
-fn create_bot(data: BotCreationData, resp: &mut Response) -> BerylliumResult<()>
-{
+fn create_bot(data: BotCreationData, resp: &mut Response) -> BerylliumResult<()> {
     info!("Creating new bot...");
     let storage = StorageManager::new(&data.id)?;
     let mut prekeys = storage.initialize_prekeys(data.conversation.members.len())?;
@@ -137,8 +139,10 @@ fn handle_messages<H>(pool: Arc<CpuPool>,
                      -> BerylliumResult<()>
     where H: Handler
 {
-    // parking_lot's Mutex is suitable for fine-grained locks, so we
+    // NOTE: parking_lot's Mutex is suitable for fine-grained locks, so we
     // check (and possibly refresh) the data and release it immediately.
+    // We do this a lot below.
+
     {
         if bot_data.lock().get(&bot_id).is_none() {
             let storage = StorageManager::new(&bot_id)?;
@@ -155,29 +159,60 @@ fn handle_messages<H>(pool: Arc<CpuPool>,
         // FIXME: Get devices
     }
 
-    match data.type_ {
-        ConversationEventType::Rename => {
+    // TODO:
+    // - Isolate events into their own functions.
+    // - Revisit `clone` usage.
+    let event = match (&data.type_, &data.data) {
+        (&ConversationEventType::MemberLeave,
+         &ConversationData::LeavingOrJoiningMembers { ref user_ids }) => {
+            let (conversation, client) = {
+                let mut lock = bot_data.lock();
+                let old_data = lock.get_mut(&bot_id).unwrap();
+                // Remove users from existing data
+                old_data.data.conversation.members.retain(|ref member| {
+                    user_ids.iter().find(|&id| id == &member.id).is_none()
+                });
+
+                (old_data.data.conversation.clone(), old_data.client.clone())
+            };
+
+            // If bot has left, then remove entire data
+            if user_ids.iter().find(|&id| id == &bot_id).is_some() {
+                bot_data.lock().remove(&bot_id).unwrap();
+            }
+
+            Some((EventData {
+                bot_id: bot_id,
+                event: Event::ConversationMemberLeave { conversation },
+            }, client))
+        },
+
+        (&ConversationEventType::Rename,
+         &ConversationData::Rename { ref name }) => {
             let (old, new, client) = {
                 let mut lock = bot_data.lock();
                 let old_data = lock.get_mut(&bot_id).unwrap();
                 let old_name = (*old_data).data.conversation.name.clone();
-                let new_name = match data.data {
-                    ConversationData::Rename { ref name } => name.to_owned(),
-                    _ => return Err(BerylliumError::Unreachable),
-                };
-
-                old_data.data.conversation.name = new_name.clone();
-                (old_name, new_name, old_data.client.clone())
+                old_data.data.conversation.name = name.clone();
+                (old_name, name.clone(), old_data.client.clone())
             };
 
-            let _ = pool.spawn_fn(move || {
-                handler.handle(EventData {
-                    bot_id: bot_id,
-                    event: Event::ConversationRename { old, new },
-                }, client)
-            });
+            Some((EventData {
+                bot_id: bot_id,
+                event: Event::ConversationRename { old, new },
+            }, client))
         },
-        _ => (),
+
+        _ => {
+            debug!("Unknown type {:?} and data {:?}", data.type_, data.data);
+            return Err(BerylliumError::Unreachable)
+        },
+    };
+
+    if let Some((event_data, client)) = event {
+        let _ = pool.spawn_fn(move || {
+            handler.handle(event_data, client)
+        });
     }
 
     resp.set_status(StatusCode::Ok);
