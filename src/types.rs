@@ -1,12 +1,17 @@
+use client::BotClient;
 use serde::de::{Deserialize, Deserializer, Error as DecodeError};
 use serde_json::Value;
+use storage::StorageManager;
 // FIXME: Check the types for id (String), i32, etc.
 // which are too generic
 
 pub enum Event {
     ConversationMemberJoin,
     ConversationMemberLeave,
-    ConversationRename,
+    ConversationRename {
+        old: String,
+        new: String,
+    },
     Message,
     Image,
 }
@@ -25,6 +30,7 @@ pub struct Member {
 #[derive(Deserialize, Serialize)]
 pub struct Conversation {
     pub id: String,
+    pub name: String,
     pub members: Vec<Member>,
 }
 
@@ -43,6 +49,12 @@ pub struct BotCreationData {
     pub conversation: Conversation,
     pub token: String,
     pub locale: String,
+}
+
+pub struct BotData {
+    pub storage: StorageManager,
+    pub data: BotCreationData,
+    pub client: BotClient,
 }
 
 pub enum ConversationEventType {

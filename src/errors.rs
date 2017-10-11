@@ -18,6 +18,7 @@ pub enum BerylliumError {
     PemFileError,
     Reqwest(ReqwestError),
     Serde(SerdeError),
+    Unreachable,
 }
 
 impl Display for BerylliumError {
@@ -30,6 +31,7 @@ impl Display for BerylliumError {
             BerylliumError::PemFileError  => f.write_str("PEM file error"),
             BerylliumError::Reqwest(ref e) => write!(f, "Reqwest error: {}", e),
             BerylliumError::Serde(ref e) => write!(f, "Serde error: {}", e),
+            BerylliumError::Unreachable => write!(f, "Entered unreachable code!"),
         }
     }
 }

@@ -1,6 +1,7 @@
 extern crate base64;
 extern crate cryptobox;
 extern crate futures;
+extern crate futures_cpupool;
 extern crate hyper;
 #[macro_use] extern crate lazy_static;
 #[macro_use] extern crate log;

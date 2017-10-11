@@ -64,8 +64,6 @@ impl BotService {
         let https_server = Server::new(Http::new(), Arc::new(self.config));
         let tcp_server = TcpServer::new(https_server, addr.clone());
         let handler = Arc::new(handler);
-        tcp_server.serve(move || Ok(BotHandler {
-            handler: handler.clone(),
-        }))
+        tcp_server.serve(move || Ok(BotHandler::new(handler.clone())))
     }
 }

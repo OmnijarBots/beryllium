@@ -3,11 +3,11 @@ use cryptobox::CBox;
 use cryptobox::store::file::FileStore;
 use errors::BerylliumResult;
 use proteus::keys::PreKeyId;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json;
 use std::{iter, u16};
 use std::fs::{self, File};
-use std::io::BufWriter;
+use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
 use types::EncodedPreKey;
 
@@ -53,5 +53,14 @@ impl StorageManager {
                           .map(BufWriter::new)?;
         serde_json::to_writer(&mut fd, data)?;
         Ok(())
+    }
+
+    pub fn load_state<T>(&self) -> BerylliumResult<T>
+        where for<'de> T: Deserialize<'de>
+    {
+        let mut fd = File::open(self.path.join("bot_data.json"))
+                          .map(BufReader::new)?;
+        let data = serde_json::from_reader(&mut fd)?;
+        Ok(data)
     }
 }

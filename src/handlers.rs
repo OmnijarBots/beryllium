@@ -1,25 +1,44 @@
 use {serde_json, utils};
 use client::BotClient;
-use errors::BerylliumResult;
+use errors::{BerylliumError, BerylliumResult};
 use futures::{Future, Stream};
 use futures::future;
+use futures_cpupool::{Builder, CpuPool};
 use hyper::{Body, Error as HyperError, Method, StatusCode};
 use hyper::header::{Authorization, Bearer, ContentLength};
 use hyper::server::{Service, Request, Response};
+use parking_lot::Mutex;
 use storage::StorageManager;
+use std::collections::HashMap;
 use std::sync::Arc;
-use types::{BotCreationData, BotCreationResponse, EventData, MessageData};
+use types::{BotData, BotCreationData, BotCreationResponse, Event, EventData};
+use types::{ConversationData, ConversationEventType, MessageData};
 
-// FIXME: Figure out how to async with futures...
 pub trait Handler: Send + Sync + 'static {
-    fn handle(&self, data: EventData, client: BotClient);
+    type Item: Send + 'static;
+    type Error: Send + 'static;
+    type Future: Future<Item=Self::Item, Error=Self::Error> + Send + 'static;
+
+    fn handle(&self, data: EventData, client: BotClient) -> Self::Future;
 }
 
 pub struct BotHandler<H> {
-    pub handler: Arc<H>,
+    handler: Arc<H>,
+    pool: Arc<CpuPool>,
+    bot_data: Arc<Mutex<HashMap<String, BotData>>>,
 }
 
-impl<H> Service for BotHandler<H> where H: Handler {
+impl<H: Handler> BotHandler<H> {
+    pub fn new(handler: Arc<H>) -> BotHandler<H> {
+        BotHandler {
+            handler: handler,
+            pool: Arc::new(Builder::new().create()),
+            bot_data: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl<H: Handler> Service for BotHandler<H> {
     type Request = Request;
     type Response = Response;
     type Error = HyperError;
@@ -75,12 +94,15 @@ impl<H> Service for BotHandler<H> where H: Handler {
 
         if rel_url == "/bots" {
             parse_json_and!(create_bot)
-        } else {    // PATH: /bots/:bot_id/messages
+        } else {
+            // FIXME: Better way to detect relative URL paths?
             match (split.next(), split.next(), split.next(), split.next(), split.next()) {
                 (Some(""), Some("bots"), Some(id), Some("messages"), None) => {
+                    let pool = self.pool.clone();
                     let handler = self.handler.clone();
                     let bot_id = String::from(id);
-                    parse_json_and!(handle_messages, bot_id, handler)
+                    let bot_data = self.bot_data.clone();
+                    parse_json_and!(handle_messages, pool, bot_data, bot_id, handler)
                 },
                 _ => Box::new(future::ok(resp.with_status(StatusCode::NotFound))),
             }
@@ -88,15 +110,15 @@ impl<H> Service for BotHandler<H> where H: Handler {
     }
 }
 
-fn create_bot(data: BotCreationData, resp: &mut Response)
-             -> BerylliumResult<()> {
+fn create_bot(data: BotCreationData, resp: &mut Response) -> BerylliumResult<()>
+{
     info!("Creating new bot...");
     let storage = StorageManager::new(&data.id)?;
     let mut prekeys = storage.initialize_prekeys(data.conversation.members.len())?;
     // There will always be a final prekey corresponding to u16::MAX
     let final_key = prekeys.pop().unwrap();
+    storage.save_state(&data)?;
 
-    let _ = storage.save_state(&data);
     let data = BotCreationResponse {
         prekeys: prekeys,
         last_prekey: final_key,
@@ -108,11 +130,56 @@ fn create_bot(data: BotCreationData, resp: &mut Response)
     Ok(())
 }
 
-fn handle_messages<H>(bot_id: String, handler: Arc<H>,
+fn handle_messages<H>(pool: Arc<CpuPool>,
+                      bot_data: Arc<Mutex<HashMap<String, BotData>>>,
+                      bot_id: String, handler: Arc<H>,
                       data: MessageData, resp: &mut Response)
                      -> BerylliumResult<()>
     where H: Handler
 {
+    // parking_lot's Mutex is suitable for fine-grained locks, so we
+    // check (and possibly refresh) the data and release it immediately.
+    {
+        if bot_data.lock().get(&bot_id).is_none() {
+            let storage = StorageManager::new(&bot_id)?;
+            let store_data: BotCreationData = storage.load_state()?;
+            let client = BotClient::new(bot_id.as_str(),
+                                        store_data.token.as_str());
+            bot_data.lock().insert(bot_id.clone(), BotData {
+                storage: storage,
+                data: store_data,
+                client: client,
+            });
+        }
+
+        // FIXME: Get devices
+    }
+
+    match data.type_ {
+        ConversationEventType::Rename => {
+            let (old, new, client) = {
+                let mut lock = bot_data.lock();
+                let old_data = lock.get_mut(&bot_id).unwrap();
+                let old_name = (*old_data).data.conversation.name.clone();
+                let new_name = match data.data {
+                    ConversationData::Rename { ref name } => name.to_owned(),
+                    _ => return Err(BerylliumError::Unreachable),
+                };
+
+                old_data.data.conversation.name = new_name.clone();
+                (old_name, new_name, old_data.client.clone())
+            };
+
+            let _ = pool.spawn_fn(move || {
+                handler.handle(EventData {
+                    bot_id: bot_id,
+                    event: Event::ConversationRename { old, new },
+                }, client)
+            });
+        },
+        _ => (),
+    }
+
     resp.set_status(StatusCode::Ok);
     Ok(())
 }
