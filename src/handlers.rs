@@ -1,5 +1,5 @@
 use {serde_json, utils};
-use client::{BotClient, HttpsClient};
+use client::{BotClient, BotData};
 use errors::{BerylliumError, BerylliumResult};
 use futures::{Future, Stream};
 use futures::future;
@@ -11,8 +11,9 @@ use parking_lot::Mutex;
 use storage::StorageManager;
 use std::collections::HashMap;
 use std::sync::Arc;
-use types::{BotData, BotCreationData, BotCreationResponse, Event, EventData};
-use types::{ConversationData, ConversationEventType, MessageData};
+use types::{BotCreationData, BotCreationResponse, Event, EventData};
+use types::{ConversationData, ConversationEventType, MessageData, MessageRequest};
+use types::{Devices, Member};
 
 pub trait Handler: Send + Sync + 'static {
     type Item: Send + 'static;
@@ -104,7 +105,7 @@ impl<H: Handler> Service for BotHandler<H> {
                     let handler = self.handler.clone();
                     let bot_id = String::from(id);
                     let bot_data = self.bot_data.clone();
-                    parse_json_and!(handle_messages, pool, bot_data, bot_id, handler)
+                    parse_json_and!(handle_events, pool, bot_data, bot_id, handler)
                 },
                 _ => Box::new(future::ok(resp.with_status(StatusCode::NotFound))),
             }
@@ -131,49 +132,60 @@ fn create_bot(data: BotCreationData, resp: &mut Response) -> BerylliumResult<()>
     Ok(())
 }
 
-fn handle_messages<H>(pool: Arc<CpuPool>,
-                      bot_data: Arc<Mutex<HashMap<String, BotData>>>,
-                      bot_id: String, handler: Arc<H>,
-                      data: MessageData, resp: &mut Response)
-                     -> BerylliumResult<()>
+fn handle_events<H>(pool: Arc<CpuPool>,
+                    bot_data: Arc<Mutex<HashMap<String, BotData>>>,
+                    bot_id: String, handler: Arc<H>,
+                    data: MessageData, resp: &mut Response)
+                   -> BerylliumResult<()>
     where H: Handler
 {
     // NOTE: parking_lot's Mutex is suitable for fine-grained locks, so we
     // acquire the lock, check (and possibly refresh) the data and release it
     // immediately. We do this a lot below.
 
-    let has_devices = {
-        if bot_data.lock().get(&bot_id).is_none() {
-            let storage = StorageManager::new(&bot_id)?;
-            let store_data: BotCreationData = storage.load_state()?;
-            let client = HttpsClient::new(bot_id.as_str(),
-                                          store_data.token.as_str());
-            bot_data.lock().insert(bot_id.clone(), BotData {
-                storage: storage,
-                data: store_data,
-                client: client,
-                devices: None,
-            });
+    if bot_data.lock().get(&bot_id).is_none() {
+        let mut this_bot_data = BotData::from_storage(&bot_id)?;
+        let (devices, status): (Devices, _) = this_bot_data.client.send_message(MessageRequest {
+            sender: this_bot_data.data.client.clone(),
+            recipients: HashMap::new(),
+        }, false)?;
 
-            false
-        } else {
-            bot_data.lock().get(&bot_id)
-                    .and_then(|ref d| d.devices.as_ref()).is_some()
+        // This happens only when we haven't sent the encrypted message
+        // for all the devices in the conversation (i.e., we don't have all the devices).
+        if status == StatusCode::PreconditionFailed {
+            this_bot_data.devices = Some(devices);
         }
-    };
 
-    if !has_devices {
-        //
+        bot_data.lock().insert(bot_id.clone(), this_bot_data);
     }
 
     // TODO:
     // - Isolate events into their own functions.
     // - Revisit `clone` usage on various types.
     let event = match (data.type_, &data.data) {
-        // (&ConversationEventType::MemberJoin,
-        //  &ConversationData::LeavingOrJoiningMembers { ref user_ids }) => {
+        (ConversationEventType::MemberJoin,
+         &ConversationData::LeavingOrJoiningMembers { ref user_ids }) => {
+            // FIXME: What if we don't have the devices of these members?
+            let (conversation, client) = {
+                let mut lock = bot_data.lock();
+                let old_data = lock.get_mut(&bot_id).unwrap();
+                // Add users to existing data
+                for id in user_ids {
+                    old_data.data.conversation.members.insert(Member {
+                        id: id.clone(),
+                        status: 0,
+                    });
+                }
 
-        // },
+                (old_data.data.conversation.clone(), old_data.client.clone())
+            };
+
+            let members_joined = user_ids.clone();
+            Some((EventData {
+                bot_id: bot_id,
+                event: Event::ConversationMemberJoin { members_joined, conversation },
+            }, client))
+        },
 
         (ConversationEventType::MemberLeave,
          &ConversationData::LeavingOrJoiningMembers { ref user_ids }) => {
@@ -181,9 +193,9 @@ fn handle_messages<H>(pool: Arc<CpuPool>,
                 let mut lock = bot_data.lock();
                 let old_data = lock.get_mut(&bot_id).unwrap();
                 // Remove users from existing data
-                old_data.data.conversation.members.retain(|ref member| {
-                    user_ids.iter().find(|&id| id == &member.id).is_none()
-                });
+                for id in user_ids {
+                    old_data.data.conversation.members.remove(id.as_str());
+                }
 
                 (old_data.data.conversation.clone(), old_data.client.clone())
             };
@@ -193,9 +205,10 @@ fn handle_messages<H>(pool: Arc<CpuPool>,
                 bot_data.lock().remove(&bot_id).unwrap();
             }
 
+            let members_left = user_ids.clone();
             Some((EventData {
                 bot_id: bot_id,
-                event: Event::ConversationMemberLeave { conversation },
+                event: Event::ConversationMemberLeave { members_left, conversation },
             }, client))
         },
 

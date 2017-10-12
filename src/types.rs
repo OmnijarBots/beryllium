@@ -1,14 +1,18 @@
-use client::HttpsClient;
 use serde::de::{Deserialize, Deserializer, Error as DecodeError};
 use serde_json::Value;
-use std::collections::HashMap;
-use storage::StorageManager;
+use std::borrow::Borrow;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 // FIXME: Check the types for id (String), i32, etc.
 // which are too generic
 
 pub enum Event {
-    ConversationMemberJoin,
+    ConversationMemberJoin {
+        members_joined: Vec<String>,
+        conversation: Conversation,
+    },
     ConversationMemberLeave {
+        members_left: Vec<String>,
         conversation: Conversation,
     },
     ConversationRename {
@@ -30,12 +34,33 @@ pub struct Member {
     pub status: i32,
 }
 
+// Implementations for HashSet addressing
+impl Borrow<str> for Member {
+    fn borrow(&self) -> &str {
+        self.id.as_str()
+    }
+}
+
+impl Hash for Member {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+impl PartialEq for Member {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for Member {}
+
 #[derive(Clone)]
 #[derive(Deserialize, Serialize)]
 pub struct Conversation {
     pub id: String,
     pub name: String,
-    pub members: Vec<Member>,
+    pub members: HashSet<Member>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -58,14 +83,7 @@ pub struct BotCreationData {
 #[derive(Deserialize)]
 pub struct Devices {
     // UserID -> [ClientID]
-    missing: HashMap<String, Vec<String>>
-}
-
-pub struct BotData {
-    pub storage: StorageManager,
-    pub data: BotCreationData,
-    pub client: HttpsClient,
-    pub devices: Option<Devices>,
+    pub missing: HashMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -130,4 +148,10 @@ pub struct EncodedPreKey {
 pub struct BotCreationResponse {
     pub prekeys: Vec<EncodedPreKey>,
     pub last_prekey: EncodedPreKey,
+}
+
+#[derive(Serialize)]
+pub struct MessageRequest {
+    pub sender: String,
+    pub recipients: HashMap<String, HashMap<String, Vec<u8>>>,
 }

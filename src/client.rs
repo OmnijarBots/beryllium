@@ -4,6 +4,8 @@ use hyper::header::{Authorization, Bearer, ContentType, Headers};
 use reqwest::{Client, Response, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use storage::StorageManager;
+use types::{BotCreationData, Devices};
 
 const HOST_ADDRESS: &'static str = "https://prod-nginz-https.wire.com";
 
@@ -57,6 +59,27 @@ impl HttpsClient {
         let mut resp = self.request(Method::Post, &url, Some(data), None)?;
         let json = resp.json()?;
         Ok((json, resp.status()))
+    }
+}
+
+pub struct BotData {
+    pub storage: StorageManager,
+    pub data: BotCreationData,
+    pub client: HttpsClient,
+    pub devices: Option<Devices>,
+}
+
+impl BotData {
+    pub fn from_storage(bot_id: &str) -> BerylliumResult<BotData> {
+        let storage = StorageManager::new(&bot_id)?;
+        let store_data: BotCreationData = storage.load_state()?;
+        let client = HttpsClient::new(bot_id, store_data.token.as_str());
+        Ok(BotData {
+            storage: storage,
+            data: store_data,
+            client: client,
+            devices: None,
+        })
     }
 }
 
