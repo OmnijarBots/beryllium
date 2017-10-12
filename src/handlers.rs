@@ -28,7 +28,7 @@ pub trait Handler: Send + Sync + 'static {
 pub struct BotHandler<H> {
     handler: Arc<H>,
     pool: Arc<CpuPool>,
-    bot_data: Arc<Mutex<HashMap<String, BotData>>>,
+    bot_data: Arc<Mutex<HashMap<String, Arc<Mutex<BotData>>>>>,
 }
 
 impl<H: Handler> BotHandler<H> {
@@ -133,17 +133,17 @@ fn create_bot(data: BotCreationData, resp: &mut Response) -> BerylliumResult<()>
 }
 
 fn handle_events<H>(pool: Arc<CpuPool>,
-                    bot_data: Arc<Mutex<HashMap<String, BotData>>>,
+                    bot_data: Arc<Mutex<HashMap<String, Arc<Mutex<BotData>>>>>,
                     bot_id: String, handler: Arc<H>,
                     data: MessageData, resp: &mut Response)
                    -> BerylliumResult<()>
     where H: Handler
 {
     // NOTE: parking_lot's Mutex is suitable for fine-grained locks, so we
-    // acquire the lock, check (and possibly refresh) the data and release it
-    // immediately. We do this a lot below.
+    // acquire and release the lock quite a lot of times below.
 
-    if bot_data.lock().get(&bot_id).is_none() {
+    // Maybe we've rebooted our bot and we don't have the creation data in memory.
+    let this_bot_data = if bot_data.lock().get(&bot_id).is_none() {
         let mut this_bot_data = BotData::from_storage(&bot_id)?;
         let (devices, status): (Devices, _) = this_bot_data.client.send_message(MessageRequest {
             sender: this_bot_data.data.client.clone(),
@@ -156,19 +156,32 @@ fn handle_events<H>(pool: Arc<CpuPool>,
             this_bot_data.devices = Some(devices);
         }
 
-        bot_data.lock().insert(bot_id.clone(), this_bot_data);
-    }
+        let this_bot_data = Arc::new(Mutex::new(this_bot_data));
+        bot_data.lock().insert(bot_id.clone(), this_bot_data.clone());
+        this_bot_data
+    } else {
+        bot_data.lock().get(&bot_id).unwrap().clone()
+    };
+
+    // NOTE: Since we have `Arc<Mutex<BotData>>`, we won't block the
+    // requests related to other conversations.
 
     // TODO:
+    // - Proper logging
     // - Isolate events into their own functions.
     // - Revisit `clone` usage on various types.
+    // - Figure out how to isolate post-response functions (decrypting message, for example).
     let event = match (data.type_, &data.data) {
+        // (ConversationEventType::MessageAdd,
+        //  &ConversationData::MessageAdd { ref sender, ref recipient, ref text }) => {
+        //     //
+        // },
+
         (ConversationEventType::MemberJoin,
          &ConversationData::LeavingOrJoiningMembers { ref user_ids }) => {
             // FIXME: What if we don't have the devices of these members?
             let (conversation, client) = {
-                let mut lock = bot_data.lock();
-                let old_data = lock.get_mut(&bot_id).unwrap();
+                let mut old_data = this_bot_data.lock();
                 // Add users to existing data
                 for id in user_ids {
                     old_data.data.conversation.members.insert(Member {
@@ -190,8 +203,7 @@ fn handle_events<H>(pool: Arc<CpuPool>,
         (ConversationEventType::MemberLeave,
          &ConversationData::LeavingOrJoiningMembers { ref user_ids }) => {
             let (conversation, client) = {
-                let mut lock = bot_data.lock();
-                let old_data = lock.get_mut(&bot_id).unwrap();
+                let mut old_data = this_bot_data.lock();
                 // Remove users from existing data
                 for id in user_ids {
                     old_data.data.conversation.members.remove(id.as_str());
@@ -215,8 +227,7 @@ fn handle_events<H>(pool: Arc<CpuPool>,
         (ConversationEventType::Rename,
          &ConversationData::Rename { ref name }) => {
             let (conversation, client) = {
-                let mut lock = bot_data.lock();
-                let old_data = lock.get_mut(&bot_id).unwrap();
+                let mut old_data = this_bot_data.lock();
                 old_data.data.conversation.name = name.clone();
                 (old_data.data.conversation.clone(), old_data.client.clone())
             };
