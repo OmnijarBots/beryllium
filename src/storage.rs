@@ -63,4 +63,27 @@ impl StorageManager {
         let data = serde_json::from_reader(&mut fd)?;
         Ok(data)
     }
+
+    pub fn decrypt(&self, user_id: &str, client_id: &str,
+                   data: &str) -> BerylliumResult<Vec<u8>>
+    {
+        let id = format!("{}_{}", user_id, client_id);
+        let bytes = base64::decode(&data)?;
+        let plain_data = match self.cbox.session_load(id.clone())? {
+            Some(mut session) => {
+                let data = session.decrypt(&bytes)?;
+                self.cbox.session_save(&mut session)?;
+                data
+            },
+            None => {
+                info!("Couldn't find session for id: {}", id);
+                let (mut session, data) =
+                    self.cbox.session_from_message(id.clone(), &bytes)?;
+                self.cbox.session_save(&mut session)?;
+                data
+            },
+        };
+
+        Ok(plain_data)
+    }
 }

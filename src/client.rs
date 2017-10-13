@@ -4,6 +4,7 @@ use hyper::header::{Authorization, Bearer, ContentType, Headers};
 use reqwest::{Client, Response, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use std::sync::Arc;
 use storage::StorageManager;
 use types::{BotCreationData, Devices};
 
@@ -63,7 +64,8 @@ impl HttpsClient {
 }
 
 pub struct BotData {
-    pub storage: StorageManager,
+    // This will be shared with the HttpsClient for sending encrypted messages.
+    pub storage: Arc<StorageManager>,
     pub data: BotCreationData,
     pub client: HttpsClient,
     pub devices: Option<Devices>,
@@ -75,7 +77,7 @@ impl BotData {
         let store_data: BotCreationData = storage.load_state()?;
         let client = HttpsClient::new(bot_id, store_data.token.as_str());
         Ok(BotData {
-            storage: storage,
+            storage: Arc::new(storage),
             data: store_data,
             client: client,
             devices: None,
@@ -87,12 +89,15 @@ impl BotData {
 #[derive(Clone)]
 pub struct BotClient {
     inner: HttpsClient,
+    storage: Arc<StorageManager>,
 }
 
-impl From<HttpsClient> for BotClient {
-    fn from(client: HttpsClient) -> BotClient {
+impl<'a> From<&'a BotData> for BotClient {
+    fn from(data: &'a BotData) -> BotClient {
         BotClient {
-            inner: client,
+            // FIXME: Should we clone this giant lump?
+            inner: data.client.clone(),
+            storage: data.storage.clone(),
         }
     }
 }

@@ -1,4 +1,4 @@
-use {serde_json, utils};
+use {protobuf, serde_json, utils};
 use client::{BotClient, BotData};
 use errors::{BerylliumError, BerylliumResult};
 use futures::{Future, Stream};
@@ -7,6 +7,7 @@ use futures_cpupool::{Builder, CpuPool};
 use hyper::{Body, Error as HyperError, Method, StatusCode};
 use hyper::header::{Authorization, Bearer, ContentLength};
 use hyper::server::{Service, Request, Response};
+use messages_proto::GenericMessage;
 use parking_lot::Mutex;
 use storage::StorageManager;
 use std::collections::HashMap;
@@ -172,10 +173,14 @@ fn handle_events<H>(pool: Arc<CpuPool>,
     // - Revisit `clone` usage on various types.
     // - Figure out how to isolate post-response functions (decrypting message, for example).
     let event = match (data.type_, &data.data) {
-        // (ConversationEventType::MessageAdd,
-        //  &ConversationData::MessageAdd { ref sender, ref recipient, ref text }) => {
-        //     //
-        // },
+        (ConversationEventType::MessageAdd,
+         &ConversationData::MessageAdd { ref sender, ref recipient, ref text }) => {
+            let mut old_data = this_bot_data.lock();
+            let plain_bytes = old_data.storage.decrypt(&data.from, sender, text)?;
+            let message: GenericMessage = protobuf::parse_from_bytes(&plain_bytes)?;
+
+            unimplemented!();
+        },
 
         (ConversationEventType::MemberJoin,
          &ConversationData::LeavingOrJoiningMembers { ref user_ids }) => {
@@ -190,7 +195,7 @@ fn handle_events<H>(pool: Arc<CpuPool>,
                     });
                 }
 
-                (old_data.data.conversation.clone(), old_data.client.clone())
+                (old_data.data.conversation.clone(), BotClient::from(&*old_data))
             };
 
             let members_joined = user_ids.clone();
@@ -209,7 +214,7 @@ fn handle_events<H>(pool: Arc<CpuPool>,
                     old_data.data.conversation.members.remove(id.as_str());
                 }
 
-                (old_data.data.conversation.clone(), old_data.client.clone())
+                (old_data.data.conversation.clone(), BotClient::from(&*old_data))
             };
 
             // If our bot has left, then remove the entire data.
@@ -229,7 +234,7 @@ fn handle_events<H>(pool: Arc<CpuPool>,
             let (conversation, client) = {
                 let mut old_data = this_bot_data.lock();
                 old_data.data.conversation.name = name.clone();
-                (old_data.data.conversation.clone(), old_data.client.clone())
+                (old_data.data.conversation.clone(), BotClient::from(&*old_data))
             };
 
             Some((EventData {
@@ -246,7 +251,7 @@ fn handle_events<H>(pool: Arc<CpuPool>,
 
     if let Some((event_data, client)) = event {
         let _ = pool.spawn_fn(move || {
-            handler.handle(event_data, client.into())
+            handler.handle(event_data, client)
         });
     }
 
