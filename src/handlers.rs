@@ -3,7 +3,7 @@ use client::{BotClient, BotData};
 use errors::{BerylliumError, BerylliumResult};
 use futures::{Future, Stream};
 use futures::future;
-use futures_cpupool::{Builder, CpuPool};
+use futures_cpupool::{Builder, CpuFuture, CpuPool};
 use hyper::{Body, Error as HyperError, Method, StatusCode};
 use hyper::header::{Authorization, Bearer, ContentLength};
 use hyper::server::{Service, Request, Response};
@@ -16,12 +16,15 @@ use types::{BotCreationData, BotCreationResponse, Event, EventData};
 use types::{ConversationData, ConversationEventType, MessageData, MessageRequest};
 use types::{Devices, Member};
 
-pub trait Handler: Send + Sync + 'static {
-    type Item: Send + 'static;
-    type Error: Send + 'static;
-    type Future: Future<Item=Self::Item, Error=Self::Error> + Send + 'static;
+// TODO:
+// - Proper logging
+// - Isolate events into their own functions.
+// - Revisit `clone` usage on various types.
+// - Figure out how to isolate post-response functions (decrypting message, for example).
+// - Revisit usage of Arc's and Mutex'es
 
-    fn handle(&self, data: EventData, client: BotClient) -> Self::Future;
+pub trait Handler: Send + Sync + 'static {
+    fn handle(&self, data: EventData, client: BotClient);
 }
 
 // FIXME: I *know* that Arc has an overhead, but I'm not entirely
@@ -145,16 +148,16 @@ fn handle_events<H>(pool: Arc<CpuPool>,
 
     // Maybe we've rebooted our bot and we don't have the creation data in memory.
     let this_bot_data = if bot_data.lock().get(&bot_id).is_none() {
-        let mut this_bot_data = BotData::from_storage(&bot_id)?;
+        let this_bot_data = BotData::from_storage(&bot_id)?;
         let (devices, status): (Devices, _) = this_bot_data.client.send_message(MessageRequest {
-            sender: this_bot_data.data.client.clone(),
+            sender: &this_bot_data.data.client,
             recipients: HashMap::new(),
         }, false)?;
 
         // This happens only when we haven't sent the encrypted message
         // for all the devices in the conversation (i.e., we don't have all the devices).
         if status == StatusCode::PreconditionFailed {
-            this_bot_data.devices = Some(devices);
+            *this_bot_data.devices.lock() = devices;
         }
 
         let this_bot_data = Arc::new(Mutex::new(this_bot_data));
@@ -167,17 +170,13 @@ fn handle_events<H>(pool: Arc<CpuPool>,
     // NOTE: Since we have `Arc<Mutex<BotData>>`, we won't block the
     // requests related to other conversations.
 
-    // TODO:
-    // - Proper logging
-    // - Isolate events into their own functions.
-    // - Revisit `clone` usage on various types.
-    // - Figure out how to isolate post-response functions (decrypting message, for example).
     let event = match (data.type_, &data.data) {
         (ConversationEventType::MessageAdd,
          &ConversationData::MessageAdd { ref sender, ref recipient, ref text }) => {
             let mut old_data = this_bot_data.lock();
             let plain_bytes = old_data.storage.decrypt(&data.from, sender, text)?;
             let message: GenericMessage = protobuf::parse_from_bytes(&plain_bytes)?;
+            // We can decrypt and decode the message - 200 OK
 
             unimplemented!();
         },
@@ -250,9 +249,14 @@ fn handle_events<H>(pool: Arc<CpuPool>,
     };
 
     if let Some((event_data, client)) = event {
-        let _ = pool.spawn_fn(move || {
-            handler.handle(event_data, client)
+        let handle: CpuFuture<(), ()> = pool.spawn_fn(move || {
+            handler.handle(event_data, client);
+            Ok(())
         });
+
+        // NOTE: This prevents the pool from canceling the computations
+        // once the handle is dropped.
+        handle.forget();
     }
 
     resp.set_status(StatusCode::Ok);

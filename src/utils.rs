@@ -1,9 +1,13 @@
 use parking_lot::RwLock;
+use reqwest::Client;
 use std::path::{Path, PathBuf};
 
+pub use uuid_v1::new_v1 as uuid_v1;
+
 lazy_static! {
-    pub static ref STORE_PATH: RwLock<PathBuf> = RwLock::new(PathBuf::from("."));
-    pub static ref AUTH_TOKEN: RwLock<String> = RwLock::new(String::new());
+    static ref STORE_PATH: RwLock<PathBuf> = RwLock::new(PathBuf::from("."));
+    static ref AUTH_TOKEN: RwLock<String> = RwLock::new(String::new());
+    pub static ref HYPER_CLIENT: Client = Client::new();
 }
 
 // NOTE: Setting methods are meant to be called only once (during init)

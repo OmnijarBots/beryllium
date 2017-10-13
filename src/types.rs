@@ -80,7 +80,7 @@ pub struct BotCreationData {
     pub locale: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 pub struct Devices {
     // UserID -> [ClientID]
     pub missing: HashMap<String, Vec<String>>,
@@ -151,7 +151,7 @@ pub struct BotCreationResponse {
 }
 
 #[derive(Serialize)]
-pub struct MessageRequest {
-    pub sender: String,
+pub struct MessageRequest<'a> {
+    pub sender: &'a str,
     pub recipients: HashMap<String, HashMap<String, Vec<u8>>>,
 }

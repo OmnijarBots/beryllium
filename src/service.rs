@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio_rustls::proto::Server;
 use tokio_proto::TcpServer;
-use utils;
+use utils::{self, HYPER_CLIENT};
 
 pub struct BotService {
     config: ServerConfig,
@@ -46,6 +46,7 @@ impl BotService {
                   -> BerylliumResult<BotService>
         where P: AsRef<Path>
     {
+        let _ = &*HYPER_CLIENT;     // Initialize the lazy HTTPS client
         let certs = Self::load_certs(cert_path)?;
         let key = Self::load_private_key(key_path)?;
         let mut tls_config = ServerConfig::new();
