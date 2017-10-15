@@ -60,7 +60,8 @@ impl HttpsClient {
         Ok((json, resp.status()))
     }
 
-    pub fn send_encrypted_message(&self, data: &GenericMessage)
+    pub fn send_encrypted_message(&self, data: &GenericMessage,
+                                  devices: &Mutex<Devices>)
                                  -> BerylliumResult<StatusCode>
     {
         let bytes = data.write_to_bytes()?;

@@ -20,7 +20,6 @@ use types::{Devices, Member};
 // - Proper logging
 // - Isolate events into their own functions.
 // - Revisit `clone` usage on various types.
-// - Figure out how to isolate post-response functions (decrypting message, for example).
 // - Revisit usage of Arc's and Mutex'es
 
 pub trait Handler: Send + Sync + 'static {

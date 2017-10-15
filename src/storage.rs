@@ -6,6 +6,7 @@ use proteus::keys::PreKeyId;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::{iter, u16};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
@@ -62,6 +63,35 @@ impl StorageManager {
                           .map(BufReader::new)?;
         let data = serde_json::from_reader(&mut fd)?;
         Ok(data)
+    }
+
+    pub fn encrypt_for_devices<'a>(&self, data: &[u8],
+                                   devices: &'a HashMap<String, Vec<String>>)
+                                  -> Vec<(&'a str, &'a str, Vec<u8>)>
+    {
+        let mut vec = vec![];
+
+        for (key, clients) in devices {
+            for client in clients {
+                let id = format!("{}_{}", key, client);
+                match self.cbox.session_load(id) {
+                    Ok(Some(mut session)) => {
+                        let cypher = session.encrypt(data).ok();
+                        if self.cbox.session_save(&mut session).is_err() {
+                            // Should we ignore if we can't save the session?
+                            continue
+                        }
+
+                        if let Some(c) = cypher {
+                            vec.push((key.as_str(), client.as_str(), c));
+                        }
+                    },
+                    _ => continue,
+                }
+            }
+        }
+
+        vec
     }
 
     pub fn decrypt(&self, user_id: &str, client_id: &str,
