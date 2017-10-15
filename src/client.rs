@@ -1,4 +1,4 @@
-use base64;
+use {base64, utils};
 use errors::{BerylliumError, BerylliumResult};
 use hyper::Method;
 use hyper::header::{Authorization, Bearer, ContentType, Headers};
@@ -19,7 +19,6 @@ const HOST_ADDRESS: &'static str = "https://prod-nginz-https.wire.com";
 
 #[derive(Clone)]
 pub struct HttpsClient {
-    bot_id: String,
     client: String,
     auth_token: String,
 }
@@ -75,11 +74,8 @@ impl HttpsClient {
         }
     }
 
-    pub fn send_encrypted_message(&self, data: &GenericMessage,
-                                  storage: &StorageManager,
-                                  devices: &Mutex<Devices>)
-                                 -> BerylliumResult<()>
-    {
+    pub fn send_encrypted_message(&self, data: &GenericMessage, storage: &StorageManager,
+                                  devices: &Mutex<Devices>) -> BerylliumResult<()> {
         let bytes = data.write_to_bytes()?;
         let mut devices_clone = {
             let devs = devices.lock();
@@ -137,13 +133,24 @@ impl HttpsClient {
 
         Ok(())
     }
+
+    pub fn send_confirmation(&self, message_id: &str, storage: &StorageManager,
+                             devices: &Mutex<Devices>) -> BerylliumResult<()> {
+        let mut message = GenericMessage::new();
+        let uuid = utils::uuid_v1();
+        message.set_message_id(uuid.to_string());
+        let mut confirmation = Confirmation::new();
+        confirmation.set_message_id(message_id.to_owned());
+        confirmation.set_field_type(ConfirmationType::DELIVERED);
+        message.set_confirmation(confirmation);
+        self.send_encrypted_message(&message, storage, devices)
+    }
 }
 
 impl<'a> From<&'a BotCreationData> for HttpsClient {
     fn from(data: &'a BotCreationData) -> HttpsClient {
         HttpsClient {
             auth_token: data.token.to_owned(),
-            bot_id: data.id.clone(),
             client: data.client.clone(),
         }
     }

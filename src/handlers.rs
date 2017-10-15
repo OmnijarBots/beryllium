@@ -159,13 +159,37 @@ fn handle_events<H>(pool: Arc<CpuPool>,
 
     let event = match (data.type_, &data.data) {
         (ConversationEventType::MessageAdd,
-         &ConversationData::MessageAdd { ref sender, ref recipient, ref text }) => {
-            let mut old_data = this_bot_data.lock();
-            let plain_bytes = old_data.storage.decrypt(&data.from, sender, text)?;
-            let message: GenericMessage = protobuf::parse_from_bytes(&plain_bytes)?;
-            // We can decrypt and decode the message - 200 OK
+         &ConversationData::MessageAdd { ref sender, recipient: _, ref text }) => {
+            let (storage, client, devices, user_client) = {
+                let lock = this_bot_data.lock();
+                (lock.storage.clone(), lock.client.clone(),
+                 lock.devices.clone(), BotClient::from(&*lock))
+            };
 
-            unimplemented!();
+            let plain_bytes = storage.decrypt(&data.from, sender, text)?;
+            let mut message: GenericMessage = protobuf::parse_from_bytes(&plain_bytes)?;
+
+            // We can decrypt and decode the message - 200 OK
+            {
+                let msg_id = message.get_message_id();
+                client.send_confirmation(msg_id, &storage, &devices)?;
+            }
+
+            if message.has_text() {
+                let mut text = message.take_text();
+                let content = text.take_content();
+
+                Some((EventData {
+                    bot_id,
+                    conversation: this_bot_data.lock().data.conversation.clone(),
+                    event: Event::Message {
+                        from: data.from.clone(),
+                        text: content,
+                    }
+                }, user_client))
+            } else {    // FIXME: Handle images
+                None
+            }
         },
 
         (ConversationEventType::MemberJoin,
@@ -186,8 +210,9 @@ fn handle_events<H>(pool: Arc<CpuPool>,
 
             let members_joined = user_ids.clone();
             Some((EventData {
-                bot_id: bot_id,
-                event: Event::ConversationMemberJoin { members_joined, conversation },
+                bot_id,
+                conversation,
+                event: Event::ConversationMemberJoin { members_joined },
             }, client))
         },
 
@@ -210,8 +235,9 @@ fn handle_events<H>(pool: Arc<CpuPool>,
 
             let members_left = user_ids.clone();
             Some((EventData {
-                bot_id: bot_id,
-                event: Event::ConversationMemberLeave { members_left, conversation },
+                bot_id,
+                conversation,
+                event: Event::ConversationMemberLeave { members_left },
             }, client))
         },
 
@@ -224,8 +250,9 @@ fn handle_events<H>(pool: Arc<CpuPool>,
             };
 
             Some((EventData {
-                bot_id: bot_id,
-                event: Event::ConversationRename { conversation },
+                bot_id,
+                conversation,
+                event: Event::ConversationRename,
             }, client))
         },
 

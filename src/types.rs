@@ -9,21 +9,21 @@ use std::hash::{Hash, Hasher};
 pub enum Event {
     ConversationMemberJoin {
         members_joined: Vec<String>,
-        conversation: Conversation,
     },
     ConversationMemberLeave {
         members_left: Vec<String>,
-        conversation: Conversation,
     },
-    ConversationRename {
-        conversation: Conversation,
+    ConversationRename,
+    Message {
+        text: String,
+        from: String,
     },
-    Message,
     Image,
 }
 
 pub struct EventData {
     pub bot_id: String,
+    pub conversation: Conversation,
     pub event: Event,
 }
 
