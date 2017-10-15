@@ -22,22 +22,24 @@ pub enum BerylliumError {
     Serde(SerdeError),
     Base64(B64DecodeError),
     Protobuf(ProtobufError),
+    Other(String),
     Unreachable,
 }
 
 impl Display for BerylliumError {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         match *self {
-            BerylliumError::CBox(ref e)   => write!(f, "Cryptobox error: {}", e),
-            BerylliumError::Io(ref e)     => write!(f, "I/O error: {}", e),
-            BerylliumError::Encode(ref e) => write!(f, "Encode error: {}", e),
-            BerylliumError::Decode(ref e) => write!(f, "Decode error: {}", e),
-            BerylliumError::PemFileError  => f.write_str("PEM file error"),
-            BerylliumError::Reqwest(ref e) => write!(f, "Reqwest error: {}", e),
-            BerylliumError::Serde(ref e) => write!(f, "Serde error: {}", e),
-            BerylliumError::Base64(ref e) => write!(f, "Base64 decode error: {}", e),
+            BerylliumError::CBox(ref e)     => write!(f, "Cryptobox error: {}", e),
+            BerylliumError::Io(ref e)       => write!(f, "I/O error: {}", e),
+            BerylliumError::Encode(ref e)   => write!(f, "Encode error: {}", e),
+            BerylliumError::Decode(ref e)   => write!(f, "Decode error: {}", e),
+            BerylliumError::PemFileError    => f.write_str("PEM file error"),
+            BerylliumError::Reqwest(ref e)  => write!(f, "Reqwest error: {}", e),
+            BerylliumError::Serde(ref e)    => write!(f, "Serde error: {}", e),
+            BerylliumError::Base64(ref e)   => write!(f, "Base64 decode error: {}", e),
             BerylliumError::Protobuf(ref e) => write!(f, "Protobuf error: {}", e),
-            BerylliumError::Unreachable => write!(f, "Entered unreachable code!"),
+            BerylliumError::Other(ref e)    => write!(f, "Unknown error: {}", e),
+            BerylliumError::Unreachable     => write!(f, "Entered unreachable code!"),
         }
     }
 }

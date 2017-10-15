@@ -138,11 +138,13 @@ pub struct MessageData {
     pub time: String,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 pub struct EncodedPreKey {
     pub id: u16,
     pub key: String,
 }
+
+pub type DevicePreKeys = HashMap<String, HashMap<String, EncodedPreKey>>;
 
 #[derive(Serialize)]
 pub struct BotCreationResponse {
@@ -151,7 +153,7 @@ pub struct BotCreationResponse {
 }
 
 #[derive(Serialize)]
-pub struct MessageRequest<'a> {
+pub struct MessageRequest<'a, 'b> {
     pub sender: &'a str,
-    pub recipients: HashMap<String, HashMap<String, Vec<u8>>>,
+    pub recipients: HashMap<&'b str, HashMap<&'b str, String>>,
 }

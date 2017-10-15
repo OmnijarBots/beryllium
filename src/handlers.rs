@@ -13,8 +13,7 @@ use storage::StorageManager;
 use std::collections::HashMap;
 use std::sync::Arc;
 use types::{BotCreationData, BotCreationResponse, Event, EventData};
-use types::{ConversationData, ConversationEventType, MessageData, MessageRequest};
-use types::{Devices, Member};
+use types::{ConversationData, ConversationEventType, MessageData, Member};
 
 // TODO:
 // - Proper logging
@@ -148,17 +147,6 @@ fn handle_events<H>(pool: Arc<CpuPool>,
     // Maybe we've rebooted our bot and we don't have the creation data in memory.
     let this_bot_data = if bot_data.lock().get(&bot_id).is_none() {
         let this_bot_data = BotData::from_storage(&bot_id)?;
-        let (devices, status): (Devices, _) = this_bot_data.client.send_message(MessageRequest {
-            sender: &this_bot_data.data.client,
-            recipients: HashMap::new(),
-        }, false)?;
-
-        // This happens only when we haven't sent the encrypted message
-        // for all the devices in the conversation (i.e., we don't have all the devices).
-        if status == StatusCode::PreconditionFailed {
-            *this_bot_data.devices.lock() = devices;
-        }
-
         let this_bot_data = Arc::new(Mutex::new(this_bot_data));
         bot_data.lock().insert(bot_id.clone(), this_bot_data.clone());
         this_bot_data

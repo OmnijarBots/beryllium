@@ -65,12 +65,28 @@ impl StorageManager {
         Ok(data)
     }
 
+    pub fn encrypt(&self, user_id: &str, client_id: &str,
+                   data: &[u8], prekey: &[u8]) -> BerylliumResult<String>
+    {
+        let id = format!("{}_{}", user_id, client_id);
+        let mut session = match self.cbox.session_load(id.clone())? {
+            Some(sess) => sess,
+            None => {
+                info!("Couldn't find session for id: {}", id);
+                self.cbox.session_from_prekey(id, prekey)?
+            },
+        };
+
+        let data = session.encrypt(data)?;
+        self.cbox.session_save(&mut session)?;
+        Ok(base64::encode(&data))
+    }
+
     pub fn encrypt_for_devices<'a>(&self, data: &[u8],
                                    devices: &'a HashMap<String, Vec<String>>)
-                                  -> Vec<(&'a str, &'a str, Vec<u8>)>
+                                  -> HashMap<&'a str, HashMap<&'a str, String>>
     {
-        let mut vec = vec![];
-
+        let mut map = HashMap::with_capacity(devices.len());
         for (key, clients) in devices {
             for client in clients {
                 let id = format!("{}_{}", key, client);
@@ -83,7 +99,10 @@ impl StorageManager {
                         }
 
                         if let Some(c) = cypher {
-                            vec.push((key.as_str(), client.as_str(), c));
+                            let clients = map.entry(key.as_str())
+                                             .or_insert(HashMap::new());
+                            let encoded = base64::encode(&c);
+                            clients.entry(client.as_str()).or_insert(encoded);
                         }
                     },
                     _ => continue,
@@ -91,7 +110,7 @@ impl StorageManager {
             }
         }
 
-        vec
+        map
     }
 
     pub fn decrypt(&self, user_id: &str, client_id: &str,
@@ -108,7 +127,7 @@ impl StorageManager {
             None => {
                 info!("Couldn't find session for id: {}", id);
                 let (mut session, data) =
-                    self.cbox.session_from_message(id.clone(), &bytes)?;
+                    self.cbox.session_from_message(id, &bytes)?;
                 self.cbox.session_save(&mut session)?;
                 data
             },
