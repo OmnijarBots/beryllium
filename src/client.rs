@@ -2,7 +2,7 @@ use {base64, utils};
 use errors::{BerylliumError, BerylliumResult};
 use hyper::Method;
 use hyper::header::{Authorization, Bearer, ContentType, Headers};
-use messages_proto::{Confirmation, GenericMessage};
+use messages_proto::{Confirmation, GenericMessage, Text};
 use messages_proto::Confirmation_Type as ConfirmationType;
 use parking_lot::Mutex;
 use protobuf::Message;
@@ -195,5 +195,17 @@ impl<'a> From<&'a BotData> for BotClient {
             sender: data.data.client.clone(),
             devices: data.devices.clone(),
         }
+    }
+}
+
+impl BotClient {
+    pub fn send_message(&self, text: &str) -> BerylliumResult<()> {
+        let mut message = GenericMessage::new();
+        let uuid = utils::uuid_v1();
+        message.set_message_id(uuid.to_string());
+        let mut txt = Text::new();
+        txt.set_content(text.to_owned());
+        message.set_text(txt);
+        self.inner.send_encrypted_message(&message, &self.storage, &self.devices)
     }
 }

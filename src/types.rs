@@ -27,8 +27,7 @@ pub struct EventData {
     pub event: Event,
 }
 
-#[derive(Clone)]
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Member {
     pub id: String,
     pub status: i32,
@@ -55,8 +54,7 @@ impl PartialEq for Member {
 
 impl Eq for Member {}
 
-#[derive(Clone)]
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Conversation {
     pub id: String,
     pub name: String,
