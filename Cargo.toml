@@ -22,7 +22,12 @@ serde_derive = "1.0"
 serde_json = "1.0"
 tokio-rustls = { version = "0.4", features = ["tokio-proto"] }
 tokio-proto = "0.1"
-uuid_v1 = "0.1"
+# uuid_v1 = "0.1"
+
+# For musl support, interfaces-rs should be bumped, followed by uuid_v1
+# Until then, we gotta work around.
+[dependencies.uuid_v1]
+git = "git://github.com/wafflespeanut/uuid_v1_rs"
 
 [build-dependencies]
 protoc-rust = "1.4"

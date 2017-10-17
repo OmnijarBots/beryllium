@@ -11,11 +11,13 @@ RUN VERSION=1.0.15 && \
     curl -L https://download.libsodium.org/libsodium/releases/libsodium-$VERSION.tar.gz -o libsodium-$VERSION.tar.gz && \
     tar xfvz libsodium-$VERSION.tar.gz && \
     cd libsodium-$VERSION/ && \
-    ./configure --enable-shared=no && \
+    CC=musl-gcc CPPFLAGS=-I/usr/local/musl/include LDFLAGS=-L/usr/local/musl/lib ./configure --enable-shared=no --disable-pie --prefix=/usr/local/musl && \
     make && make check && \
     sudo make install && \
     sudo mv src/libsodium /usr/local/ && \
     rm -rf /home/rust/libs/libsodium
+
+# Protobuf is only used in compile-time.
 
 RUN VERSION=3.4.0 && \
     cd /home/rust/libs && \
