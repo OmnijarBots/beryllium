@@ -1,0 +1,7 @@
+[package]
+name = "echo-bot"
+version = "0.1.0"
+authors = ["Ravi Shankar <wafflespeanut@gmail.com>"]
+
+[dependencies.beryllium]
+path = "../../"
