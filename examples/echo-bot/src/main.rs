@@ -1,6 +1,12 @@
 extern crate beryllium;
+extern crate chrono;
+extern crate env_logger;
+extern crate log;
 
 use beryllium::{BotClient, BotService, Handler, EventData, Event};
+use chrono::offset::Utc;
+use env_logger::LogBuilder;
+use log::{LogRecord, LogLevelFilter};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -45,6 +51,15 @@ macro_rules! get_env {
 }
 
 fn main() {
+    let mut builder = LogBuilder::new();
+    builder.format(|record: &LogRecord| format!("{:?}: {}: {}", Utc::now(), record.level(), record.args()))
+           .filter(None, LogLevelFilter::Info);
+    if let Ok(v) = env::var("RUST_LOG") {
+       builder.parse(&v);
+    }
+
+    builder.init().unwrap();
+
     let data_path = get_env!("DATA_DIR", "./bot_data");
     let addr = get_env!("ADDRESS", "0.0.0.0:6000").parse().unwrap();;
     let key = get_env!("KEY_PATH", "key.pem");

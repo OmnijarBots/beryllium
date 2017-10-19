@@ -2,6 +2,7 @@ use errors::{BerylliumError, BerylliumResult};
 use handlers::{BotHandler, Handler};
 use hyper::server::Http;
 use rustls::{Certificate, PrivateKey, ServerConfig};
+use rustls::{AllowAnyAnonymousOrAuthenticatedClient, RootCertStore};
 use rustls::internal::pemfile;
 use std::fs::File;
 use std::io::BufReader;
@@ -49,7 +50,10 @@ impl BotService {
         let _ = &*HYPER_CLIENT;     // Initialize the lazy HTTPS client
         let certs = Self::load_certs(cert_path)?;
         let key = Self::load_private_key(key_path)?;
-        let mut tls_config = ServerConfig::new();
+
+        let store = RootCertStore::empty();
+        let verifier = AllowAnyAnonymousOrAuthenticatedClient::new(store);
+        let mut tls_config = ServerConfig::new(verifier);
         tls_config.set_single_cert(certs, key);
         utils::set_auth_token(auth);
         utils::set_store_path(store_path);

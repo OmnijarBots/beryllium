@@ -16,11 +16,11 @@ parking_lot = "0.4"
 proteus = { git = "https://github.com/wireapp/proteus", branch = "develop" }
 protobuf = "1.4"
 reqwest = "0.8"
-rustls = "0.11"
+# rustls = "0.11"
 serde = "1.0"
 serde_derive = "1.0"
 serde_json = "1.0"
-tokio-rustls = { version = "0.4", features = ["tokio-proto"] }
+# tokio-rustls = { version = "0.4", features = ["tokio-proto"] }
 tokio-proto = "0.1"
 # uuid_v1 = "0.1"
 
@@ -28,6 +28,16 @@ tokio-proto = "0.1"
 # Until then, we gotta work around.
 [dependencies.uuid_v1]
 git = "git://github.com/wafflespeanut/uuid_v1_rs"
+
+# workaround since rustls doesn't support self-signed certs
+[dependencies.rustls]
+git = "git://github.com/wafflespeanut/rustls"
+features = ["dangerous_configuration"]
+
+# ... tokio-rustls depends on rustls
+[dependencies.tokio-rustls]
+git = "git://github.com/wafflespeanut/tokio-rustls"
+features = ["tokio-proto"]
 
 [build-dependencies]
 protoc-rust = "1.4"
