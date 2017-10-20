@@ -30,7 +30,7 @@ pub struct EventData {
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Member {
     pub id: String,
-    pub status: i32,
+    pub status: i8,
 }
 
 // Implementations for HashSet addressing
@@ -65,7 +65,8 @@ pub struct Conversation {
 pub struct Origin {
     pub id: String,
     pub name: String,
-    pub accent_id: i32,
+    pub handle: String,
+    pub accent_id: i8,
 }
 
 #[derive(Deserialize, Serialize)]

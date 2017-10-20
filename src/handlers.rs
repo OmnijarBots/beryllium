@@ -1,14 +1,15 @@
-use {protobuf, serde_json, utils};
+use {protobuf, utils};
 use client::{BotClient, BotData};
 use errors::{BerylliumError, BerylliumResult};
 use futures::{Future, Stream};
 use futures::future;
 use futures_cpupool::{Builder, CpuFuture, CpuPool};
-use hyper::{Body, Error as HyperError, Method, StatusCode};
+use hyper::{Body, Error as HyperError, Headers, Method, StatusCode};
 use hyper::header::{Authorization, Bearer, ContentLength};
 use hyper::server::{Service, Request, Response};
 use messages_proto::GenericMessage;
 use parking_lot::Mutex;
+use serde_json::{self, Value as SerdeValue};
 use storage::StorageManager;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -54,6 +55,7 @@ impl<H: Handler> Service for BotHandler<H> {
         let (method, uri, _version, headers, body) = req.deconstruct();
 
         if method != Method::Post {     // only allow POST
+            debug!("Disallowed method: {}", method);
             resp.set_status(StatusCode::MethodNotAllowed);
             return Box::new(future::ok(resp))
         } else {        // all requests should have Bearer token auth
@@ -61,6 +63,7 @@ impl<H: Handler> Service for BotHandler<H> {
                 Some(header) if utils::check_auth_token(&header.to_string()[7..]) => (),
                 _ => {
                     resp.set_status(StatusCode::Unauthorized);
+                    debug!("Unauthorized request!");
                     return Box::new(future::ok(resp))
                 }
             }
@@ -84,6 +87,7 @@ impl<H: Handler> Service for BotHandler<H> {
                             resp.set_status(StatusCode::InternalServerError);
                         }
                     } else {
+                        debug!("Cannot parse JSON object!");
                         resp.set_status(StatusCode::BadRequest);
                     }
 
@@ -95,24 +99,32 @@ impl<H: Handler> Service for BotHandler<H> {
         }
 
         let rel_url = uri.path();
-        let mut split = rel_url.split('/');
+        debug!("Incoming authorized request - Path: {}", rel_url);
+        let mut split = rel_url.trim_matches('/').split('/');
 
-        if rel_url == "/bots" {
+        if rel_url == "bots" {
             parse_json_and!(create_bot)
         } else {
             // FIXME: Better way to detect relative URL paths?
-            match (split.next(), split.next(), split.next(), split.next(), split.next()) {
-                (Some(""), Some("bots"), Some(id), Some("messages"), None) => {
+            match (split.next(), split.next(), split.next(), split.next()) {
+                (Some("bots"), Some(id), Some("messages"), None) => {
                     let pool = self.pool.clone();
                     let handler = self.handler.clone();
                     let bot_id = String::from(id);
                     let bot_data = self.bot_data.clone();
                     parse_json_and!(handle_events, pool, bot_data, bot_id, handler)
                 },
-                _ => Box::new(future::ok(resp.with_status(StatusCode::NotFound))),
+                _ => parse_json_and!(empty_response, headers),
             }
         }
     }
+}
+
+fn empty_response(headers: Headers, data: SerdeValue,
+                  resp: &mut Response) -> BerylliumResult<()> {
+    debug!("[Headers] \n{}\nData: {}\n", headers, data);
+    resp.set_status(StatusCode::NotFound);
+    Ok(())
 }
 
 fn create_bot(data: BotCreationData, resp: &mut Response) -> BerylliumResult<()> {
@@ -141,6 +153,7 @@ fn handle_events<H>(pool: Arc<CpuPool>,
                    -> BerylliumResult<()>
     where H: Handler
 {
+    debug!("Preparing to handle conversation event...");
     // NOTE: parking_lot's Mutex is suitable for fine-grained locks, so we
     // acquire and release the lock quite a lot of times below.
 
@@ -168,6 +181,7 @@ fn handle_events<H>(pool: Arc<CpuPool>,
 
             let plain_bytes = storage.decrypt(&data.from, sender, text)?;
             let mut message: GenericMessage = protobuf::parse_from_bytes(&plain_bytes)?;
+            debug!("Successfully decrypted message!");
 
             // We can decrypt and decode the message - 200 OK
             {
