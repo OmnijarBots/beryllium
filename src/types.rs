@@ -3,15 +3,16 @@ use serde_json::Value;
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use uuid::Uuid;
 // FIXME: Check the types for id (String), i32, etc.
 // which are too generic
 
 pub enum Event {
     ConversationMemberJoin {
-        members_joined: Vec<String>,
+        members_joined: Vec<Uuid>,
     },
     ConversationMemberLeave {
-        members_left: Vec<String>,
+        members_left: Vec<Uuid>,
     },
     ConversationRename,
     Message {
@@ -22,21 +23,21 @@ pub enum Event {
 }
 
 pub struct EventData {
-    pub bot_id: String,
+    pub bot_id: Uuid,
     pub conversation: Conversation,
     pub event: Event,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Member {
-    pub id: String,
+    pub id: Uuid,
     pub status: i8,
 }
 
 // Implementations for HashSet addressing
-impl Borrow<str> for Member {
-    fn borrow(&self) -> &str {
-        self.id.as_str()
+impl Borrow<Uuid> for Member {
+    fn borrow(&self) -> &Uuid {
+        &self.id
     }
 }
 
@@ -56,14 +57,14 @@ impl Eq for Member {}
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Conversation {
-    pub id: String,
+    pub id: Uuid,
     pub name: String,
     pub members: HashSet<Member>,
 }
 
 #[derive(Deserialize, Serialize)]
 pub struct Origin {
-    pub id: String,
+    pub id: Uuid,
     pub name: String,
     pub handle: String,
     pub accent_id: i8,
@@ -71,7 +72,7 @@ pub struct Origin {
 
 #[derive(Deserialize, Serialize)]
 pub struct BotCreationData {
-    pub id: String,
+    pub id: Uuid,
     pub client: String,
     pub origin: Origin,
     pub conversation: Conversation,
@@ -119,7 +120,7 @@ pub enum ConversationData {
         text: String,
     },
     LeavingOrJoiningMembers {
-        user_ids: Vec<String>,
+        user_ids: Vec<Uuid>,
     },
     Rename {
         name: String,

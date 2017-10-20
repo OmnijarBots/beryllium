@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use types::{BotCreationData, BotCreationResponse, Event, EventData};
 use types::{ConversationData, ConversationEventType, MessageData, Member};
+use uuid::Uuid;
 
 // TODO:
 // - Proper logging
@@ -31,7 +32,7 @@ pub trait Handler: Send + Sync + 'static {
 pub struct BotHandler<H> {
     handler: Arc<H>,
     pool: Arc<CpuPool>,
-    bot_data: Arc<Mutex<HashMap<String, Arc<Mutex<BotData>>>>>,
+    bot_data: Arc<Mutex<HashMap<Uuid, Arc<Mutex<BotData>>>>>,
 }
 
 impl<H: Handler> BotHandler<H> {
@@ -102,20 +103,17 @@ impl<H: Handler> Service for BotHandler<H> {
         debug!("Incoming authorized request - Path: {}", rel_url);
         let mut split = rel_url.trim_matches('/').split('/');
 
-        if rel_url == "bots" {
-            parse_json_and!(create_bot)
-        } else {
-            // FIXME: Better way to detect relative URL paths?
-            match (split.next(), split.next(), split.next(), split.next()) {
-                (Some("bots"), Some(id), Some("messages"), None) => {
-                    let pool = self.pool.clone();
-                    let handler = self.handler.clone();
-                    let bot_id = String::from(id);
-                    let bot_data = self.bot_data.clone();
-                    parse_json_and!(handle_events, pool, bot_data, bot_id, handler)
-                },
-                _ => parse_json_and!(empty_response, headers),
-            }
+        // FIXME: Better way to detect relative URL paths?
+        match (split.next(), split.next(), split.next(), split.next()) {
+            (Some("bots"), None, None, None) => parse_json_and!(create_bot),
+            (Some("bots"), Some(id), Some("messages"), None) => {
+                let pool = self.pool.clone();
+                let handler = self.handler.clone();
+                let bot_id = String::from(id);
+                let bot_data = self.bot_data.clone();
+                parse_json_and!(handle_events, pool, bot_data, bot_id, handler)
+            },
+            _ => parse_json_and!(empty_response, headers),
         }
     }
 }
@@ -129,7 +127,7 @@ fn empty_response(headers: Headers, data: SerdeValue,
 
 fn create_bot(data: BotCreationData, resp: &mut Response) -> BerylliumResult<()> {
     info!("Creating new bot...");
-    let storage = StorageManager::new(&data.id)?;
+    let storage = StorageManager::new(data.id)?;
     let mut prekeys = storage.initialize_prekeys(data.conversation.members.len())?;
     // There will always be a final prekey corresponding to u16::MAX
     let final_key = prekeys.pop().unwrap();
@@ -147,21 +145,22 @@ fn create_bot(data: BotCreationData, resp: &mut Response) -> BerylliumResult<()>
 }
 
 fn handle_events<H>(pool: Arc<CpuPool>,
-                    bot_data: Arc<Mutex<HashMap<String, Arc<Mutex<BotData>>>>>,
+                    bot_data: Arc<Mutex<HashMap<Uuid, Arc<Mutex<BotData>>>>>,
                     bot_id: String, handler: Arc<H>,
                     data: MessageData, resp: &mut Response)
                    -> BerylliumResult<()>
     where H: Handler
 {
+    let bot_id = bot_id.parse::<Uuid>()?;
     debug!("Preparing to handle conversation event...");
     // NOTE: parking_lot's Mutex is suitable for fine-grained locks, so we
     // acquire and release the lock quite a lot of times below.
 
     // Maybe we've rebooted our bot and we don't have the creation data in memory.
     let this_bot_data = if bot_data.lock().get(&bot_id).is_none() {
-        let this_bot_data = BotData::from_storage(&bot_id)?;
+        let this_bot_data = BotData::from_storage(bot_id)?;
         let this_bot_data = Arc::new(Mutex::new(this_bot_data));
-        bot_data.lock().insert(bot_id.clone(), this_bot_data.clone());
+        bot_data.lock().insert(bot_id, this_bot_data.clone());
         this_bot_data
     } else {
         bot_data.lock().get(&bot_id).unwrap().clone()
@@ -214,7 +213,7 @@ fn handle_events<H>(pool: Arc<CpuPool>,
                 // Add users to existing data
                 for id in user_ids {
                     old_data.data.conversation.members.insert(Member {
-                        id: id.clone(),
+                        id: *id,
                         status: 0,
                     });
                 }
@@ -236,7 +235,7 @@ fn handle_events<H>(pool: Arc<CpuPool>,
                 let mut old_data = this_bot_data.lock();
                 // Remove users from existing data
                 for id in user_ids {
-                    old_data.data.conversation.members.remove(id.as_str());
+                    old_data.data.conversation.members.remove(id);
                 }
 
                 (old_data.data.conversation.clone(), BotClient::from(&*old_data))

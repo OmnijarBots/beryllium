@@ -16,6 +16,7 @@ extern crate serde_json;
 extern crate tokio_rustls;
 extern crate tokio_proto;
 // TODO: Remove this once this has been merged into nursery
+extern crate uuid;
 extern crate uuid_v1;
 
 mod client;

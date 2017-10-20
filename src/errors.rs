@@ -8,6 +8,7 @@ use serde_json::error::Error as SerdeError;
 use std::error::Error;
 use std::fmt::{self, Display};
 use std::io;
+use uuid::ParseError as UuidError;
 
 pub type BerylliumResult<T> = Result<T, BerylliumError>;
 
@@ -22,6 +23,7 @@ pub enum BerylliumError {
     Serde(SerdeError),
     Base64(B64DecodeError),
     Protobuf(ProtobufError),
+    Uuid(UuidError),
     Other(String),
     Unreachable,
 }
@@ -38,6 +40,7 @@ impl Display for BerylliumError {
             BerylliumError::Serde(ref e)    => write!(f, "Serde error: {}", e),
             BerylliumError::Base64(ref e)   => write!(f, "Base64 decode error: {}", e),
             BerylliumError::Protobuf(ref e) => write!(f, "Protobuf error: {}", e),
+            BerylliumError::Uuid(ref e)     => write!(f, "UUID parse error: {}", e),
             BerylliumError::Other(ref e)    => write!(f, "Unknown error: {}", e),
             BerylliumError::Unreachable     => write!(f, "Entered unreachable code!"),
         }
@@ -58,6 +61,7 @@ impl Error for BerylliumError {
             BerylliumError::Reqwest(ref e)  => Some(e),
             BerylliumError::Base64(ref e)   => Some(e),
             BerylliumError::Protobuf(ref e) => Some(e),
+            BerylliumError::Uuid(ref e)     => Some(e),
             BerylliumError::Serde(ref e)    => Some(e),
             _ => None,
         }
@@ -109,5 +113,11 @@ impl From<B64DecodeError> for BerylliumError {
 impl From<ProtobufError> for BerylliumError {
     fn from(e: ProtobufError) -> BerylliumError {
         BerylliumError::Protobuf(e)
+    }
+}
+
+impl From<UuidError> for BerylliumError {
+    fn from(e: UuidError) -> BerylliumError {
+        BerylliumError::Uuid(e)
     }
 }

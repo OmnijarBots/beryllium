@@ -11,6 +11,7 @@ use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
 use types::EncodedPreKey;
+use uuid::Uuid;
 
 pub struct StorageManager {
     path: PathBuf,
@@ -18,9 +19,9 @@ pub struct StorageManager {
 }
 
 impl StorageManager {
-    pub fn new(id: &str) -> BerylliumResult<Self> {
+    pub fn new(id: Uuid) -> BerylliumResult<Self> {
         let mut path = utils::get_store_path();
-        path.push(id);
+        path.push(id.to_string());
         if !path.is_dir() {
             info!("Creating {}", path.display());
             fs::create_dir_all(&path)?;

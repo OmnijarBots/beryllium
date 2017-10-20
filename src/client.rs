@@ -14,6 +14,7 @@ use std::sync::Arc;
 use storage::StorageManager;
 use types::{BotCreationData, Devices, DevicePreKeys, MessageRequest};
 use utils::HYPER_CLIENT;
+use uuid::Uuid;
 
 const HOST_ADDRESS: &'static str = "https://prod-nginz-https.wire.com";
 
@@ -166,8 +167,8 @@ pub struct BotData {
 }
 
 impl BotData {
-    pub fn from_storage(bot_id: &str) -> BerylliumResult<BotData> {
-        let storage = StorageManager::new(&bot_id)?;
+    pub fn from_storage(bot_id: Uuid) -> BerylliumResult<BotData> {
+        let storage = StorageManager::new(bot_id)?;
         let store_data: BotCreationData = storage.load_state()?;
         Ok(BotData {
             storage: Arc::new(storage),
