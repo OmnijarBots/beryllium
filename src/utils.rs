@@ -1,13 +1,16 @@
+use errors::BerylliumError;
+use futures::{Future, Stream, future};
+use hyper::{Body, Error as HyperError, Headers};
+use hyper::header::ContentLength;
 use parking_lot::RwLock;
-use reqwest::Client;
 use std::path::{Path, PathBuf};
+use types::BerylliumFuture;
 
 pub use uuid_v1::new_v1 as uuid_v1;
 
 lazy_static! {
     static ref STORE_PATH: RwLock<PathBuf> = RwLock::new(PathBuf::from("."));
     static ref AUTH_TOKEN: RwLock<String> = RwLock::new(String::new());
-    pub static ref HYPER_CLIENT: Client = Client::new();
 }
 
 // NOTE: Setting methods are meant to be called only once (during init)
@@ -27,4 +30,45 @@ pub fn get_store_path() -> PathBuf {
 #[inline]
 pub fn check_auth_token(token: &str) -> bool {
     *AUTH_TOKEN.read() == token
+}
+
+/// FIXME: Prone to DDoS attack! Restrict content length?
+pub fn acquire_body(headers: &Headers, body: Body)
+                   -> Box<Future<Item=Vec<u8>, Error=HyperError>> {
+    let mut bytes = vec![];
+    if let Some(l) = headers.get::<ContentLength>() {
+        bytes.reserve(**l as usize);
+    }
+
+    let f = body.fold(bytes, |mut acc, ref chunk| {
+        acc.extend_from_slice(chunk);
+        future::ok::<_, HyperError>(acc)
+    });
+
+    Box::new(f)
+}
+
+#[inline]
+pub fn acquire_body_with_err(headers: &Headers, body: Body)
+                            -> BerylliumFuture<Vec<u8>> {
+    let b = acquire_body(headers, body);
+    Box::new(b.map_err(BerylliumError::from))
+}
+
+macro_rules! future_try {
+    ($expr:expr) => {
+        match $expr {
+            Ok(v) => v,
+            Err(e) => return Box::new(future::err(e.into()))
+        }
+    };
+}
+
+macro_rules! future_try_box {
+    ($expr:expr) => {
+        match $expr {
+            Ok(v) => v,
+            Err(e) => return Box::new(future::err(e.into())) as BerylliumFuture<_>
+        }
+    };
 }

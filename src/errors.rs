@@ -1,9 +1,9 @@
 use base64::DecodeError as B64DecodeError;
 use cryptobox::CBoxError;
 use cryptobox::store::file::FileStore;
+use hyper::Error as HyperError;
 use proteus::{DecodeError, EncodeError};
 use protobuf::error::ProtobufError;
-use reqwest::Error as ReqwestError;
 use serde_json::error::Error as SerdeError;
 use std::error::Error;
 use std::fmt::{self, Display};
@@ -18,8 +18,8 @@ pub enum BerylliumError {
     CBox(CBoxError<FileStore>),
     Encode(EncodeError),
     Decode(DecodeError),
+    Hyper(HyperError),
     PemFileError,
-    Reqwest(ReqwestError),
     Serde(SerdeError),
     Base64(B64DecodeError),
     Protobuf(ProtobufError),
@@ -35,8 +35,8 @@ impl Display for BerylliumError {
             BerylliumError::Io(ref e)       => write!(f, "I/O error: {}", e),
             BerylliumError::Encode(ref e)   => write!(f, "Encode error: {}", e),
             BerylliumError::Decode(ref e)   => write!(f, "Decode error: {}", e),
+            BerylliumError::Hyper(ref e)    => write!(f, "Hyper error: {}", e),
             BerylliumError::PemFileError    => f.write_str("PEM file error"),
-            BerylliumError::Reqwest(ref e)  => write!(f, "Reqwest error: {}", e),
             BerylliumError::Serde(ref e)    => write!(f, "Serde error: {}", e),
             BerylliumError::Base64(ref e)   => write!(f, "Base64 decode error: {}", e),
             BerylliumError::Protobuf(ref e) => write!(f, "Protobuf error: {}", e),
@@ -58,7 +58,7 @@ impl Error for BerylliumError {
             BerylliumError::Io(ref e)       => Some(e),
             BerylliumError::Decode(ref e)   => Some(e),
             BerylliumError::Encode(ref e)   => Some(e),
-            BerylliumError::Reqwest(ref e)  => Some(e),
+            BerylliumError::Hyper(ref e)    => Some(e),
             BerylliumError::Base64(ref e)   => Some(e),
             BerylliumError::Protobuf(ref e) => Some(e),
             BerylliumError::Uuid(ref e)     => Some(e),
@@ -86,15 +86,15 @@ impl From<EncodeError> for BerylliumError {
     }
 }
 
-impl From<CBoxError<FileStore>> for BerylliumError {
-    fn from(e: CBoxError<FileStore>) -> BerylliumError {
-        BerylliumError::CBox(e)
+impl From<HyperError> for BerylliumError {
+    fn from(e: HyperError) -> BerylliumError {
+        BerylliumError::Hyper(e)
     }
 }
 
-impl From<ReqwestError> for BerylliumError {
-    fn from(e: ReqwestError) -> BerylliumError {
-        BerylliumError::Reqwest(e)
+impl From<CBoxError<FileStore>> for BerylliumError {
+    fn from(e: CBoxError<FileStore>) -> BerylliumError {
+        BerylliumError::CBox(e)
     }
 }
 

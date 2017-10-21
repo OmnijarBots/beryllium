@@ -1,11 +1,10 @@
 use {protobuf, utils};
 use client::{BotClient, BotData};
 use errors::{BerylliumError, BerylliumResult};
-use futures::{Future, Stream};
-use futures::future;
+use futures::{Future, future};
 use futures_cpupool::{Builder, CpuFuture, CpuPool};
 use hyper::{Body, Error as HyperError, Headers, Method, StatusCode};
-use hyper::header::{Authorization, Bearer, ContentLength};
+use hyper::header::{Authorization, Bearer};
 use hyper::server::{Service, Request, Response};
 use messages_proto::GenericMessage;
 use parking_lot::Mutex;
@@ -13,15 +12,15 @@ use serde_json::{self, Value as SerdeValue};
 use storage::StorageManager;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio_core::reactor::{Core, Handle, Remote};
 use types::{BotCreationData, BotCreationResponse, Event, EventData};
 use types::{ConversationData, ConversationEventType, MessageData, Member};
 use uuid::Uuid;
 
 // TODO:
-// - Proper logging
 // - Isolate events into their own functions.
 // - Revisit `clone` usage on various types.
-// - Revisit usage of Arc's and Mutex'es
+// - Revisit usage of Arc's, Mutex'es and event loop handles.
 
 pub trait Handler: Send + Sync + 'static {
     fn handle(&self, data: EventData, client: BotClient);
@@ -33,6 +32,7 @@ pub struct BotHandler<H> {
     handler: Arc<H>,
     pool: Arc<CpuPool>,
     bot_data: Arc<Mutex<HashMap<Uuid, Arc<Mutex<BotData>>>>>,
+    event_loop: Core,
 }
 
 impl<H: Handler> BotHandler<H> {
@@ -41,6 +41,7 @@ impl<H: Handler> BotHandler<H> {
             handler: handler,
             pool: Arc::new(Builder::new().create()),
             bot_data: Arc::new(Mutex::new(HashMap::new())),
+            event_loop: Core::new().expect("creating event loop"),
         }
     }
 }
@@ -56,7 +57,7 @@ impl<H: Handler> Service for BotHandler<H> {
         let (method, uri, _version, headers, body) = req.deconstruct();
 
         if method != Method::Post {     // only allow POST
-            debug!("Disallowed method: {}", method);
+            info!("Disallowed method: {}", method);
             resp.set_status(StatusCode::MethodNotAllowed);
             return Box::new(future::ok(resp))
         } else {        // all requests should have Bearer token auth
@@ -64,7 +65,7 @@ impl<H: Handler> Service for BotHandler<H> {
                 Some(header) if utils::check_auth_token(&header.to_string()[7..]) => (),
                 _ => {
                     resp.set_status(StatusCode::Unauthorized);
-                    debug!("Unauthorized request!");
+                    info!("Unauthorized request!");
                     return Box::new(future::ok(resp))
                 }
             }
@@ -72,23 +73,14 @@ impl<H: Handler> Service for BotHandler<H> {
 
         macro_rules! parse_json_and {
             ($call:expr $( , $arg:expr )*) => {{
-                let mut bytes = vec![];
-                if let Some(len) = headers.get::<ContentLength>() {
-                    bytes = Vec::with_capacity(**len as usize);
-                }
-
-                // FIXME: Prone to DDoS
-                let f = body.fold(bytes, |mut acc, ref chunk| {
-                    acc.extend_from_slice(chunk);
-                    future::ok::<_, Self::Error>(acc)
-                }).map(|vec| {
+                let f = utils::acquire_body(&headers, body).map(|vec| {
                     if let Ok(value) = serde_json::from_slice(&vec) {
                         if let Err(e) = $call($( $arg, )* value, &mut resp) {
                             error!("{}", e);
                             resp.set_status(StatusCode::InternalServerError);
                         }
                     } else {
-                        debug!("Cannot parse JSON object!");
+                        info!("Cannot parse JSON object!");
                         resp.set_status(StatusCode::BadRequest);
                     }
 
@@ -100,7 +92,7 @@ impl<H: Handler> Service for BotHandler<H> {
         }
 
         let rel_url = uri.path();
-        debug!("Incoming authorized request - Path: {}", rel_url);
+        info!("Incoming authorized request (path: {})", rel_url);
         let mut split = rel_url.trim_matches('/').split('/');
 
         // FIXME: Better way to detect relative URL paths?
@@ -111,7 +103,9 @@ impl<H: Handler> Service for BotHandler<H> {
                 let handler = self.handler.clone();
                 let bot_id = String::from(id);
                 let bot_data = self.bot_data.clone();
-                parse_json_and!(handle_events, pool, bot_data, bot_id, handler)
+                let remote = self.event_loop.remote();
+                parse_json_and!(handle_events, pool, remote,
+                                bot_data, bot_id, handler)
             },
             _ => parse_json_and!(empty_response, headers),
         }
@@ -120,13 +114,13 @@ impl<H: Handler> Service for BotHandler<H> {
 
 fn empty_response(headers: Headers, data: SerdeValue,
                   resp: &mut Response) -> BerylliumResult<()> {
-    debug!("[Headers] \n{}\nData: {}\n", headers, data);
+    info!("Unknown endpoint.\n[Headers]\n{}\nData: {}\n", headers, data);
     resp.set_status(StatusCode::NotFound);
     Ok(())
 }
 
 fn create_bot(data: BotCreationData, resp: &mut Response) -> BerylliumResult<()> {
-    info!("Creating new bot...");
+    info!("Creating new bot instance...");
     let storage = StorageManager::new(data.id)?;
     let mut prekeys = storage.initialize_prekeys(data.conversation.members.len())?;
     // There will always be a final prekey corresponding to u16::MAX
@@ -144,7 +138,7 @@ fn create_bot(data: BotCreationData, resp: &mut Response) -> BerylliumResult<()>
     Ok(())
 }
 
-fn handle_events<H>(pool: Arc<CpuPool>,
+fn handle_events<H>(pool: Arc<CpuPool>, remote: Remote,
                     bot_data: Arc<Mutex<HashMap<Uuid, Arc<Mutex<BotData>>>>>,
                     bot_id: String, handler: Arc<H>,
                     data: MessageData, resp: &mut Response)
@@ -152,7 +146,7 @@ fn handle_events<H>(pool: Arc<CpuPool>,
     where H: Handler
 {
     let bot_id = bot_id.parse::<Uuid>()?;
-    debug!("Preparing to handle conversation event...");
+    info!("Preparing to handle conversation event...");
     // NOTE: parking_lot's Mutex is suitable for fine-grained locks, so we
     // acquire and release the lock quite a lot of times below.
 
@@ -168,47 +162,46 @@ fn handle_events<H>(pool: Arc<CpuPool>,
 
     // NOTE: Since we have `Arc<Mutex<BotData>>`, we won't block the
     // requests related to other conversations.
+    let mut future_resolution = None;
+    let mut event_occurred = None;
 
-    let event = match (data.type_, &data.data) {
+    match (data.type_, &data.data) {
         (ConversationEventType::MessageAdd,
          &ConversationData::MessageAdd { ref sender, recipient: _, ref text }) => {
-            let (storage, client, devices, user_client) = {
+            let (storage, client, devices) = {
                 let lock = this_bot_data.lock();
-                (lock.storage.clone(), lock.client.clone(),
-                 lock.devices.clone(), BotClient::from(&*lock))
+                (lock.storage.clone(), lock.client.clone(), lock.devices.clone())
             };
 
             let plain_bytes = storage.decrypt(&data.from, sender, text)?;
             let mut message: GenericMessage = protobuf::parse_from_bytes(&plain_bytes)?;
-            debug!("Successfully decrypted message!");
+            info!("Successfully decrypted message!");
 
             // We can decrypt and decode the message - 200 OK
-            {
-                let msg_id = message.get_message_id();
-                client.send_confirmation(msg_id, &storage, &devices)?;
-            }
+            let msg_id = message.get_message_id().to_owned();
+            future_resolution = Some(Box::new(move |handle: &Handle| {
+                client.send_confirmation(handle.clone(), &msg_id, storage, devices)
+            }));
 
-            if message.has_text() {
+            if message.has_text() {     // FIXME: Handle images
                 let mut text = message.take_text();
                 let content = text.take_content();
 
-                Some((EventData {
+                event_occurred = Some(EventData {
                     bot_id,
                     conversation: this_bot_data.lock().data.conversation.clone(),
                     event: Event::Message {
                         from: data.from.clone(),
                         text: content,
                     }
-                }, user_client))
-            } else {    // FIXME: Handle images
-                None
+                });
             }
         },
 
         (ConversationEventType::MemberJoin,
          &ConversationData::LeavingOrJoiningMembers { ref user_ids }) => {
             // FIXME: What if we don't have the devices of these members?
-            let (conversation, client) = {
+            let conversation = {
                 let mut old_data = this_bot_data.lock();
                 // Add users to existing data
                 for id in user_ids {
@@ -218,27 +211,27 @@ fn handle_events<H>(pool: Arc<CpuPool>,
                     });
                 }
 
-                (old_data.data.conversation.clone(), BotClient::from(&*old_data))
+                old_data.data.conversation.clone()
             };
 
             let members_joined = user_ids.clone();
-            Some((EventData {
+            event_occurred = Some(EventData {
                 bot_id,
                 conversation,
                 event: Event::ConversationMemberJoin { members_joined },
-            }, client))
+            });
         },
 
         (ConversationEventType::MemberLeave,
          &ConversationData::LeavingOrJoiningMembers { ref user_ids }) => {
-            let (conversation, client) = {
+            let conversation = {
                 let mut old_data = this_bot_data.lock();
                 // Remove users from existing data
                 for id in user_ids {
                     old_data.data.conversation.members.remove(id);
                 }
 
-                (old_data.data.conversation.clone(), BotClient::from(&*old_data))
+                old_data.data.conversation.clone()
             };
 
             // If our bot has left, then remove the entire data.
@@ -247,35 +240,47 @@ fn handle_events<H>(pool: Arc<CpuPool>,
             }
 
             let members_left = user_ids.clone();
-            Some((EventData {
+            event_occurred = Some(EventData {
                 bot_id,
                 conversation,
                 event: Event::ConversationMemberLeave { members_left },
-            }, client))
+            });
         },
 
         (ConversationEventType::Rename,
          &ConversationData::Rename { ref name }) => {
-            let (conversation, client) = {
+            let conversation = {
                 let mut old_data = this_bot_data.lock();
                 old_data.data.conversation.name = name.clone();
-                (old_data.data.conversation.clone(), BotClient::from(&*old_data))
+                old_data.data.conversation.clone()
             };
 
-            Some((EventData {
+            event_occurred = Some(EventData {
                 bot_id,
                 conversation,
                 event: Event::ConversationRename,
-            }, client))
+            });
         },
 
         _ => {
-            debug!("Unknown type {:?} and data {:?}", data.type_, data.data);
+            info!("Unknown type {:?} and data {:?}", data.type_, data.data);
             return Err(BerylliumError::Unreachable)
         },
     };
 
-    if let Some((event_data, client)) = event {
+    if let Some(event_data) = event_occurred {
+        let client = {
+            let lock = this_bot_data.lock();
+            BotClient::from((&*lock, &remote))
+        };
+
+        if let Some(closure_call) = future_resolution {
+            remote.spawn(move |handle: &Handle| {
+                closure_call(handle);
+                future::ok::<(), ()>(())
+            });
+        }
+
         let handle: CpuFuture<(), ()> = pool.spawn_fn(move || {
             handler.handle(event_data, client);
             Ok(())

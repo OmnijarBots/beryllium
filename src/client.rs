@@ -1,19 +1,22 @@
 use {base64, utils};
 use errors::{BerylliumError, BerylliumResult};
-use hyper::Method;
+use futures::{Future, future};
+use hyper::{Body, Client, Method, Request, StatusCode};
 use hyper::header::{Authorization, Bearer, ContentType, Headers};
+use hyper_rustls::HttpsConnector;
 use messages_proto::{Confirmation, GenericMessage, Text};
 use messages_proto::Confirmation_Type as ConfirmationType;
 use parking_lot::Mutex;
 use protobuf::Message;
-use reqwest::{Response, StatusCode};
 use serde::Serialize;
-use serde_json::Value as SerdeValue;
+use serde_json::{self, Value as SerdeValue};
 use std::collections::HashMap;
+use std::mem;
 use std::sync::Arc;
 use storage::StorageManager;
-use types::{BotCreationData, Devices, DevicePreKeys, MessageRequest};
-use utils::HYPER_CLIENT;
+use tokio_core::reactor::{Handle, Remote};
+use types::{BerylliumFuture, BotCreationData, Devices, DevicePreKeys};
+use types::{MessageRequest, MessageStatus};
 use uuid::Uuid;
 
 const HOST_ADDRESS: &'static str = "https://prod-nginz-https.wire.com";
@@ -24,119 +27,166 @@ pub struct HttpsClient {
     auth_token: String,
 }
 
+// FIXME: Figure out how we can eliminate/improve the usage of tokio-core event loop
+// (which is here only for the sake of establishing TLS connection)
+
 impl HttpsClient {
     fn request<T>(&self, method: Method, rel_url: &str,
-                  data: Option<T>,
-                  additional_headers: Option<Headers>)
-                 -> BerylliumResult<Response>
+                  data: Option<T>, handle: &Handle)
+        -> BerylliumFuture<(StatusCode, Headers, Body)>
         where T: Serialize
     {
         let url = format!("{}{}", HOST_ADDRESS, rel_url);
-        let mut request = HYPER_CLIENT.request(method, &url);
-        let mut headers = Headers::new();
-        headers.set(ContentType::json());
-        headers.set(Authorization(Bearer {
+        info!("{}: {}", url, method);
+        let mut request = Request::new(method, url.parse().unwrap());
+        request.headers_mut().set(ContentType::json());
+        request.headers_mut().set(Authorization(Bearer {
             token: self.auth_token.to_owned(),
         }));
 
-        request.headers(headers);
-        if let Some(h) = additional_headers {
-            request.headers(h);
-        }
-
         if let Some(object) = data {
-            request.json(&object);
+            let res = serde_json::to_vec(&object).map(|bytes| {
+                request.set_body::<Vec<u8>>(bytes.into());
+            });
+            future_try!(res);
         }
 
-        request.send().map_err(BerylliumError::from)
+        let https = HttpsConnector::new(4, handle);
+        let client = Client::configure().connector(https).build(handle);
+        let f = client.request(request).and_then(|mut resp| {
+            let code = resp.status();
+            let hdrs = mem::replace(resp.headers_mut(), Headers::new());
+            future::ok((code, hdrs, resp.body()))
+        }).map_err(BerylliumError::from);
+
+        Box::new(f)
     }
 
-    pub fn send_message<T>(&self, data: T, ignore_missing: bool)
-                          -> BerylliumResult<Response>
+    pub fn send_message<T>(&self, data: T, handle: &Handle, ignore_missing: bool)
+        -> BerylliumFuture<MessageStatus>
         where T: Serialize
     {
         let url = format!("/bot/messages?ignore_missing={}", ignore_missing);
-        let resp = self.request(Method::Post, &url, Some(data), None)?;
-        Ok(resp)
+        let f = self.request(Method::Post, &url, Some(data), handle)
+                    .and_then(|(code, headers, body)| {
+            utils::acquire_body_with_err(&headers, body).and_then(move |vec| {
+                // This happens only when we haven't sent the encrypted message
+                // for all the devices in the conversation (i.e., we don't have all the devices).
+                if code == StatusCode::PreconditionFailed {
+                    info!("It seems that we're missing devices.");
+                    let res = serde_json::from_slice::<Devices>(&vec)
+                                         .map(MessageStatus::Failed)
+                                         .map_err(BerylliumError::from);
+                    future::result(res)
+                } else if code.is_success() {
+                    future::ok(MessageStatus::Sent)
+                } else {
+                    let res = serde_json::from_slice::<SerdeValue>(&vec)
+                                         .map_err(BerylliumError::from);
+                    let msg = format!("Cannot obtain prekeys for missing devices. Response: {:?}", res);
+                    future::err(BerylliumError::Other(msg))
+                }
+            })
+        });
+
+        Box::new(f)
     }
 
-    pub fn get_prekeys<T>(&self, data: T) -> BerylliumResult<DevicePreKeys>
+    pub fn get_prekeys<T>(&self, data: T, handle: &Handle)
+        -> BerylliumFuture<DevicePreKeys>
         where T: Serialize
     {
-        let mut resp = self.request(Method::Post,
-                                    "/bot/users/prekeys",
-                                    Some(data), None)?;
-        if resp.status() != StatusCode::Ok {
-            let json = resp.json::<SerdeValue>()?;
-            let msg = format!("Cannot obtain prekeys for missing devices! (Response: {:?})", json);
-            Err(BerylliumError::Other(msg))
-        } else {
-            Ok(resp.json()?)
-        }
+        let f = self.request(Method::Post, "/bot/users/prekeys", Some(data), handle)
+                    .and_then(|(code, headers, body)| {
+            utils::acquire_body_with_err(&headers, body).and_then(move |vec| {
+                if code == StatusCode::Ok {
+                    let res = serde_json::from_slice::<DevicePreKeys>(&vec)
+                                         .map_err(BerylliumError::from);
+                    future::result(res)
+                } else {
+                    let res = serde_json::from_slice::<SerdeValue>(&vec)
+                                         .map_err(BerylliumError::from);
+                    let msg = format!("Cannot obtain prekeys for missing devices. Response: {:?}", res);
+                    future::err(BerylliumError::Other(msg))
+                }
+            })
+        });
+
+        Box::new(f)
     }
 
-    pub fn send_encrypted_message(&self, data: &GenericMessage, storage: &StorageManager,
-                                  devices: &Mutex<Devices>) -> BerylliumResult<()> {
-        let bytes = data.write_to_bytes()?;
-        let mut devices_clone = {
+    pub fn send_encrypted_message(&self, data: &GenericMessage, handle: Handle,
+                                  storage: Arc<StorageManager>, devices: Arc<Mutex<Devices>>)
+        -> BerylliumFuture<()>
+    {
+        let bytes = future_try!(data.write_to_bytes());
+        let devices_clone = {
             let devs = devices.lock();
-            devs.missing.clone()    // We clone and release the lock
+            devs.missing.clone()    // clone and release the lock
         };
 
-        let mut resp = {
+        let message = {
             let encrypted = storage.encrypt_for_devices(&bytes, &devices_clone);
-            let message = MessageRequest {
+            MessageRequest {
                 sender: &self.client,
                 recipients: encrypted,
-            };
-
-            self.send_message(&message, false)?
+            }
         };
 
-        let status = resp.status();
-        // This happens only when we haven't sent the encrypted message
-        // for all the devices in the conversation (i.e., we don't have all the devices).
-        if status == StatusCode::PreconditionFailed {
-            let resp_devices: Devices = resp.json()?;
-            let prekeys = self.get_prekeys(&resp_devices.missing)?;
-            let mut new_data = HashMap::with_capacity(resp_devices.missing.len());
+        let mut devices_clone = devices_clone.clone();      // BAAAHHH!!!
+        let client_clone = self.clone();
+        let f = self.send_message(message, &handle, false).and_then(move |stat| match stat {
+            MessageStatus::Sent =>
+                Box::new(future::ok(())) as BerylliumFuture<()>,
+            MessageStatus::Failed(devs) => {
+                let f = client_clone.get_prekeys(&devs.missing, &handle);
+                let f = f.and_then(move |keys| {
+                    let mut new_data = HashMap::with_capacity(keys.len());
+                    for (user_id, clients) in &keys {
+                        for (client_id, prekey) in clients {
+                            let prekey = future_try_box!(base64::decode(&prekey.key));
+                            let clients = new_data.entry(user_id.as_str()).or_insert(HashMap::new());
+                            let encrypted = future_try_box!(storage.encrypt(user_id.as_str(), client_id,
+                                                                            &bytes, &prekey));
+                            clients.entry(client_id.as_str()).or_insert(encrypted);
 
-            for (user_id, clients) in &prekeys {
-                for (client_id, prekey) in clients {
-                    let prekey = base64::decode(&prekey.key)?;
-                    let clients = new_data.entry(user_id.as_str()).or_insert(HashMap::new());
-                    let encrypted = storage.encrypt(user_id.as_str(), client_id, &bytes, &prekey)?;
-                    clients.entry(client_id.as_str()).or_insert(encrypted);
+                            // We've successfully encrypted the message for a new device with a new prekey.
+                            // Since we've already stored the session, we can safely update our devices.
+                            let clients = devices_clone.entry(user_id.clone()).or_insert(vec![]);
+                            clients.push(client_id.to_owned());
+                        }
+                    }
 
-                    // We've successfully encrypted the message for a new device with a new prekey.
-                    // Since we've already stored the session, we can safely update our devices.
-                    let clients = devices_clone.entry(user_id.clone()).or_insert(vec![]);
-                    clients.push(client_id.to_owned());
-                }
-            }
+                    devices.lock().missing = devices_clone;
+                    let message = MessageRequest {
+                        sender: &client_clone.client,
+                        recipients: new_data,
+                    };
 
-            let message = MessageRequest {
-                sender: &self.client,
-                recipients: new_data,
-            };
+                    let f = client_clone.send_message(message, &handle, false).and_then(|stat| {
+                        match stat {
+                            MessageStatus::Sent => future::ok(()),
+                            _ => {
+                                let msg = String::from("Cannot send message! Failed after device check");
+                                future::err(BerylliumError::Other(msg))
+                            },
+                        }
+                    });
 
-            let mut resp = self.send_message(&message, false)?;
-            if !resp.status().is_success() {
-                let json = resp.json::<SerdeValue>();
-                let msg = format!("Got failure response in device-check: {:?}", json);
-                return Err(BerylliumError::Other(msg))
-            }
-        } else if !status.is_success() {
-            let json = resp.json::<SerdeValue>();
-            let msg = format!("Unexpected response: {:?}", json);
-            return Err(BerylliumError::Other(msg))
-        }
+                    Box::new(f) as BerylliumFuture<()>
+                });
 
-        Ok(())
+                Box::new(f) as BerylliumFuture<()>
+            },
+        });
+
+        Box::new(f)
     }
 
-    pub fn send_confirmation(&self, message_id: &str, storage: &StorageManager,
-                             devices: &Mutex<Devices>) -> BerylliumResult<()> {
+    pub fn send_confirmation(&self, handle: Handle,
+                             message_id: &str, storage: Arc<StorageManager>,
+                             devices: Arc<Mutex<Devices>>)
+                            -> BerylliumFuture<()> {
         let mut message = GenericMessage::new();
         let uuid = utils::uuid_v1();
         message.set_message_id(uuid.to_string());
@@ -144,7 +194,7 @@ impl HttpsClient {
         confirmation.set_message_id(message_id.to_owned());
         confirmation.set_field_type(ConfirmationType::DELIVERED);
         message.set_confirmation(confirmation);
-        self.send_encrypted_message(&message, storage, devices)
+        self.send_encrypted_message(&message, handle, storage, devices)
     }
 }
 
@@ -186,27 +236,41 @@ pub struct BotClient {
     sender: String,
     storage: Arc<StorageManager>,
     devices: Arc<Mutex<Devices>>,
+    event_loop_sender: Remote,
 }
 
-impl<'a> From<&'a BotData> for BotClient {
-    fn from(data: &'a BotData) -> BotClient {
+impl<'a> From<(&'a BotData, &'a Remote)> for BotClient {
+    fn from(data: (&'a BotData, &'a Remote)) -> BotClient {
         BotClient {
-            inner: data.client.clone(),
-            storage: data.storage.clone(),
-            sender: data.data.client.clone(),
-            devices: data.devices.clone(),
+            inner: data.0.client.clone(),
+            storage: data.0.storage.clone(),
+            sender: data.0.data.client.clone(),
+            devices: data.0.devices.clone(),
+            event_loop_sender: data.1.clone(),
         }
     }
 }
 
 impl BotClient {
-    pub fn send_message(&self, text: &str) -> BerylliumResult<()> {
-        let mut message = GenericMessage::new();
-        let uuid = utils::uuid_v1();
-        message.set_message_id(uuid.to_string());
-        let mut txt = Text::new();
-        txt.set_content(text.to_owned());
-        message.set_text(txt);
-        self.inner.send_encrypted_message(&message, &self.storage, &self.devices)
+    pub fn send_message(&self, text: &str) {
+        let text = text.to_owned();
+        let (client, storage, devices) =
+            (self.inner.clone(), self.storage.clone(), self.devices.clone());
+
+        let call_closure = Box::new(move |handle: &Handle| {
+            let mut message = GenericMessage::new();
+            let uuid = utils::uuid_v1();
+            message.set_message_id(uuid.to_string());
+            let mut txt = Text::new();
+            txt.set_content(text.clone());
+            message.set_text(txt);
+            client.send_encrypted_message(&message, handle.clone(),
+                                          storage, devices);
+        });
+
+        self.event_loop_sender.spawn(move |handle: &Handle| {
+            call_closure(handle);       // FIXME: handle errors?
+            future::ok::<(), ()>(())
+        });
     }
 }

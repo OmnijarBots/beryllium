@@ -1,3 +1,5 @@
+use errors::BerylliumError;
+use futures::Future;
 use serde::de::{Deserialize, Deserializer, Error as DecodeError};
 use serde_json::Value;
 use std::borrow::Borrow;
@@ -6,6 +8,8 @@ use std::hash::{Hash, Hasher};
 use uuid::Uuid;
 // FIXME: Check the types for id (String), i32, etc.
 // which are too generic
+
+pub type BerylliumFuture<I> = Box<Future<Item=I, Error=BerylliumError>>;
 
 pub enum Event {
     ConversationMemberJoin {
@@ -156,4 +160,9 @@ pub struct BotCreationResponse {
 pub struct MessageRequest<'a, 'b> {
     pub sender: &'a str,
     pub recipients: HashMap<&'b str, HashMap<&'b str, String>>,
+}
+
+pub enum MessageStatus {
+    Sent,
+    Failed(Devices),
 }
