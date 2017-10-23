@@ -12,7 +12,7 @@ use serde_json::{self, Value as SerdeValue};
 use storage::StorageManager;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio_core::reactor::{Core, Handle, Remote};
+use tokio_core::reactor::{Handle, Remote};
 use types::{BotCreationData, BotCreationResponse, Event, EventData};
 use types::{ConversationData, ConversationEventType, MessageData, Member};
 use uuid::Uuid;
@@ -32,16 +32,16 @@ pub struct BotHandler<H> {
     handler: Arc<H>,
     pool: Arc<CpuPool>,
     bot_data: Arc<Mutex<HashMap<Uuid, Arc<Mutex<BotData>>>>>,
-    event_loop: Core,
+    event_loop_sender: Remote,
 }
 
 impl<H: Handler> BotHandler<H> {
-    pub fn new(handler: Arc<H>) -> BotHandler<H> {
+    pub fn new(handler: Arc<H>, remote: Remote) -> BotHandler<H> {
         BotHandler {
             handler: handler,
             pool: Arc::new(Builder::new().create()),
             bot_data: Arc::new(Mutex::new(HashMap::new())),
-            event_loop: Core::new().expect("creating event loop"),
+            event_loop_sender: remote,
         }
     }
 }
@@ -84,6 +84,7 @@ impl<H: Handler> Service for BotHandler<H> {
                         resp.set_status(StatusCode::BadRequest);
                     }
 
+                    info!("Responded with {}", resp.status());
                     resp
                 });
 
@@ -103,7 +104,7 @@ impl<H: Handler> Service for BotHandler<H> {
                 let handler = self.handler.clone();
                 let bot_id = String::from(id);
                 let bot_data = self.bot_data.clone();
-                let remote = self.event_loop.remote();
+                let remote = self.event_loop_sender.clone();
                 parse_json_and!(handle_events, pool, remote,
                                 bot_data, bot_id, handler)
             },
@@ -184,6 +185,7 @@ fn handle_events<H>(pool: Arc<CpuPool>, remote: Remote,
             }));
 
             if message.has_text() {     // FIXME: Handle images
+                info!("Got text message.");
                 let mut text = message.take_text();
                 let content = text.take_content();
 
@@ -214,6 +216,8 @@ fn handle_events<H>(pool: Arc<CpuPool>, remote: Remote,
                 old_data.data.conversation.clone()
             };
 
+            info!("{} member(s) have joined the conversation {}",
+                  user_ids.len(), conversation.id);
             let members_joined = user_ids.clone();
             event_occurred = Some(EventData {
                 bot_id,
@@ -239,6 +243,8 @@ fn handle_events<H>(pool: Arc<CpuPool>, remote: Remote,
                 bot_data.lock().remove(&bot_id).unwrap();
             }
 
+            info!("{} member(s) have left the conversation {}",
+                  user_ids.len(), conversation.id);
             let members_left = user_ids.clone();
             event_occurred = Some(EventData {
                 bot_id,
@@ -251,6 +257,8 @@ fn handle_events<H>(pool: Arc<CpuPool>, remote: Remote,
          &ConversationData::Rename { ref name }) => {
             let conversation = {
                 let mut old_data = this_bot_data.lock();
+                info!("conversation {} has been renamed from {} to {}",
+                      old_data.data.conversation.id, old_data.data.conversation.name, name);
                 old_data.data.conversation.name = name.clone();
                 old_data.data.conversation.clone()
             };
@@ -274,14 +282,19 @@ fn handle_events<H>(pool: Arc<CpuPool>, remote: Remote,
             BotClient::from((&*lock, &remote))
         };
 
-        if let Some(closure_call) = future_resolution {
+        if let Some(call_closure) = future_resolution {
             remote.spawn(move |handle: &Handle| {
-                closure_call(handle);
+                info!("Resolving future inside the event loop...");
+                if let Err(e) = call_closure(handle).wait() {
+                    error!("Cannot spawn future: {}", e);
+                }
+
                 future::ok::<(), ()>(())
             });
         }
 
         let handle: CpuFuture<(), ()> = pool.spawn_fn(move || {
+            info!("Handling user event...");
             handler.handle(event_data, client);
             Ok(())
         });

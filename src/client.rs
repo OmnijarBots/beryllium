@@ -37,7 +37,7 @@ impl HttpsClient {
         where T: Serialize
     {
         let url = format!("{}{}", HOST_ADDRESS, rel_url);
-        info!("{}: {}", url, method);
+        info!("{}: {}", method, url);
         let mut request = Request::new(method, url.parse().unwrap());
         request.headers_mut().set(ContentType::json());
         request.headers_mut().set(Authorization(Bearer {
@@ -73,17 +73,18 @@ impl HttpsClient {
                 // This happens only when we haven't sent the encrypted message
                 // for all the devices in the conversation (i.e., we don't have all the devices).
                 if code == StatusCode::PreconditionFailed {
-                    info!("It seems that we're missing devices.");
+                    info!("It looks like we're missing devices.");
                     let res = serde_json::from_slice::<Devices>(&vec)
                                          .map(MessageStatus::Failed)
                                          .map_err(BerylliumError::from);
                     future::result(res)
                 } else if code.is_success() {
+                    info!("Successfully sent the message.");
                     future::ok(MessageStatus::Sent)
                 } else {
                     let res = serde_json::from_slice::<SerdeValue>(&vec)
                                          .map_err(BerylliumError::from);
-                    let msg = format!("Cannot obtain prekeys for missing devices. Response: {:?}", res);
+                    let msg = format!("Error sending message. Response: {:?}", res);
                     future::err(BerylliumError::Other(msg))
                 }
             })
@@ -100,6 +101,7 @@ impl HttpsClient {
                     .and_then(|(code, headers, body)| {
             utils::acquire_body_with_err(&headers, body).and_then(move |vec| {
                 if code == StatusCode::Ok {
+                    info!("Successfully obtained prekeys for missing devices");
                     let res = serde_json::from_slice::<DevicePreKeys>(&vec)
                                          .map_err(BerylliumError::from);
                     future::result(res)
@@ -133,12 +135,13 @@ impl HttpsClient {
             }
         };
 
+        info!("Sending encrypted message...");
         let mut devices_clone = devices_clone.clone();      // BAAAHHH!!!
         let client_clone = self.clone();
         let f = self.send_message(message, &handle, false).and_then(move |stat| match stat {
-            MessageStatus::Sent =>
-                Box::new(future::ok(())) as BerylliumFuture<()>,
+            MessageStatus::Sent => Box::new(future::ok(())) as BerylliumFuture<()>,
             MessageStatus::Failed(devs) => {
+                info!("Getting prekeys for missing devices...");
                 let f = client_clone.get_prekeys(&devs.missing, &handle);
                 let f = f.and_then(move |keys| {
                     let mut new_data = HashMap::with_capacity(keys.len());
@@ -166,7 +169,7 @@ impl HttpsClient {
                     let f = client_clone.send_message(message, &handle, false).and_then(|stat| {
                         match stat {
                             MessageStatus::Sent => future::ok(()),
-                            _ => {
+                            MessageStatus::Failed(_) => {
                                 let msg = String::from("Cannot send message! Failed after device check");
                                 future::err(BerylliumError::Other(msg))
                             },
@@ -176,7 +179,7 @@ impl HttpsClient {
                     Box::new(f) as BerylliumFuture<()>
                 });
 
-                Box::new(f) as BerylliumFuture<()>
+                Box::new(f)
             },
         });
 
@@ -187,6 +190,7 @@ impl HttpsClient {
                              message_id: &str, storage: Arc<StorageManager>,
                              devices: Arc<Mutex<Devices>>)
                             -> BerylliumFuture<()> {
+        info!("Sending confirmation message...");
         let mut message = GenericMessage::new();
         let uuid = utils::uuid_v1();
         message.set_message_id(uuid.to_string());
@@ -208,7 +212,7 @@ impl<'a> From<&'a BotCreationData> for HttpsClient {
 }
 
 pub struct BotData {
-    // Arc'd stuff will be shared with the HttpsClient for sending encrypted messages.
+    // Arc'd stuff will be shared with the `BotClient` for sending encrypted messages.
     // Mutex'ed stuff will be shared with the global handler itself.
     pub storage: Arc<StorageManager>,
     pub data: BotCreationData,
@@ -265,11 +269,14 @@ impl BotClient {
             txt.set_content(text.clone());
             message.set_text(txt);
             client.send_encrypted_message(&message, handle.clone(),
-                                          storage, devices);
+                                          storage, devices)
         });
 
         self.event_loop_sender.spawn(move |handle: &Handle| {
-            call_closure(handle);       // FIXME: handle errors?
+            if let Err(e) = call_closure(handle).wait() {
+                error!("Cannot send message: {}", e);
+            }
+
             future::ok::<(), ()>(())
         });
     }

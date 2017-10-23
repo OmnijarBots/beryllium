@@ -18,7 +18,7 @@ impl Handler for EchoServer {
         match data.event {
             Event::Message { ref text, ref from } => {
                 println!("{} received message from {}", data.bot_id, from);
-                let _ = client.send_message(&format!("{} said: {}", from, text));
+                client.send_message(&format!("{} said: {}", from, text));
             },
             Event::ConversationMemberJoin { ref members_joined } => {
                 println!("Members joined: {:?}", members_joined);

@@ -1,4 +1,5 @@
 use errors::{BerylliumError, BerylliumResult};
+use futures::{Async, Future, Poll};
 use handlers::{BotHandler, Handler};
 use hyper::server::Http;
 use rustls::{Certificate, PrivateKey, ServerConfig};
@@ -8,6 +9,8 @@ use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use std::thread;
+use tokio_core::reactor::Core;
 use tokio_rustls::proto::Server;
 use tokio_proto::TcpServer;
 use utils;
@@ -61,9 +64,33 @@ impl BotService {
     pub fn start_listening<H>(self, addr: &SocketAddr, handler: H)
         where H: Handler
     {
+        let mut core = Core::new().expect("event loop creation");
         let https_server = Server::new(Http::new(), Arc::new(self.config));
         let tcp_server = TcpServer::new(https_server, addr.clone());
         let handler = Arc::new(handler);
-        tcp_server.serve(move || Ok(BotHandler::new(handler.clone())))
+        let remote = core.remote();
+
+        // Separate thread has the HTTPS server itself. It has the
+        // handle to spawn closures into the main event loop.
+        let _ = thread::spawn(move || {
+            tcp_server.serve(move || {
+                Ok(BotHandler::new(handler.clone(), remote.clone()))
+            });
+        });
+
+        // The event loop runs only for making hyper client requests.
+        core.run(NeverEndingFuture).expect("running event loop");
+    }
+}
+
+/// Zero-sized struct just to keep the event loop running.
+struct NeverEndingFuture;
+
+impl Future for NeverEndingFuture {
+    type Item = ();
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<(), ()> {
+        Ok(Async::NotReady)
     }
 }
