@@ -7,6 +7,20 @@ Wire bot SDK in Rust (experimental).
  - [libsodium](https://github.com/jedisct1/libsodium) (required for Proteus and Cryptobox)
  - [libprotoc](https://github.com/google/protobuf) - the binary is used only for codegen (i.e., for generating the Rust source for the `messages.proto` file in root)
 
+## Building
+
+Add this git repo to your `Cargo.toml`, and then you can `cargo build` the executable.
+
+For musl builds, you need a modified image of the [musl builder](https://github.com/emk/rust-musl-builder) - the `Dockerfile` is available in the repo root. Once you have the docker image, you can build the musl version of your bot.
+
+For example, let's build the echo bot in `examples`
+
+```
+$ cd beryllium
+$ docker build -t beryllium-rust-musl-builder .
+$ docker run --rm -it -v "$(pwd)":/home/rust/src beryllium-rust-musl-builder sh -c 'cd examples/echo-bot && cargo build --release'
+```
+
 ## Installation
 
 ### Private key and self-signed certificate

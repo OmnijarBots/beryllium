@@ -11,7 +11,7 @@ RUN VERSION=1.0.15 && \
     curl -L https://download.libsodium.org/libsodium/releases/libsodium-$VERSION.tar.gz -o libsodium-$VERSION.tar.gz && \
     tar xfvz libsodium-$VERSION.tar.gz && \
     cd libsodium-$VERSION/ && \
-    CC=musl-gcc CPPFLAGS=-I/usr/local/musl/include LDFLAGS=-L/usr/local/musl/lib ./configure --enable-shared=no --disable-pie --prefix=/usr/local/musl && \
+    CC=musl-gcc ./configure --enable-shared=no --disable-pie && \
     make && make check && \
     sudo make install && \
     sudo mv src/libsodium /usr/local/ && \
