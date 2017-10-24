@@ -1,9 +1,9 @@
 use {base64, utils};
 use errors::{BerylliumError, BerylliumResult};
-use futures::{Future, future};
-use hyper::{Body, Client, Method, Request, StatusCode};
+use futures::{Future, Sink, future};
+use futures::sync::mpsc::Sender as FutureSender;
+use hyper::{Body, Method, Request, StatusCode};
 use hyper::header::{Authorization, Bearer, ContentType, Headers};
-use hyper_rustls::HttpsConnector;
 use messages_proto::{Confirmation, GenericMessage, Text};
 use messages_proto::Confirmation_Type as ConfirmationType;
 use parking_lot::Mutex;
@@ -14,9 +14,8 @@ use std::collections::HashMap;
 use std::mem;
 use std::sync::Arc;
 use storage::StorageManager;
-use tokio_core::reactor::{Handle, Remote};
 use types::{BerylliumFuture, BotCreationData, Devices, DevicePreKeys};
-use types::{MessageRequest, MessageStatus};
+use types::{EventLoopRequest, HyperClient, MessageRequest, MessageStatus};
 use uuid::Uuid;
 
 const HOST_ADDRESS: &'static str = "https://prod-nginz-https.wire.com";
@@ -31,9 +30,8 @@ pub struct HttpsClient {
 // (which is here only for the sake of establishing TLS connection)
 
 impl HttpsClient {
-    fn request<T>(&self, method: Method, rel_url: &str,
-                  data: Option<T>, handle: &Handle)
-        -> BerylliumFuture<(StatusCode, Headers, Body)>
+    fn request<T>(&self, client: &HyperClient, method: Method, rel_url: &str, data: Option<T>)
+                 -> BerylliumFuture<(StatusCode, Headers, Body)>
         where T: Serialize
     {
         let url = format!("{}{}", HOST_ADDRESS, rel_url);
@@ -45,14 +43,14 @@ impl HttpsClient {
         }));
 
         if let Some(object) = data {
-            let res = serde_json::to_vec(&object).map(|bytes| {
+            let res = serde_json::to_vec(&object).map(|bytes| {   // FIXME: Error?
+                debug!("Setting JSON payload");
                 request.set_body::<Vec<u8>>(bytes.into());
             });
+
             future_try!(res);
         }
 
-        let https = HttpsConnector::new(4, handle);
-        let client = Client::configure().connector(https).build(handle);
         let f = client.request(request).and_then(|mut resp| {
             let code = resp.status();
             let hdrs = mem::replace(resp.headers_mut(), Headers::new());
@@ -62,13 +60,14 @@ impl HttpsClient {
         Box::new(f)
     }
 
-    pub fn send_message<T>(&self, data: T, handle: &Handle, ignore_missing: bool)
-        -> BerylliumFuture<MessageStatus>
+    fn send_message<T>(&self, client: &HyperClient,
+                       data: T, ignore_missing: bool)
+                      -> BerylliumFuture<MessageStatus>
         where T: Serialize
     {
         let url = format!("/bot/messages?ignore_missing={}", ignore_missing);
-        let f = self.request(Method::Post, &url, Some(data), handle)
-                    .and_then(|(code, headers, body)| {
+        let f = self.request(client, Method::Post, &url, Some(data));
+        let f = f.and_then(|(code, headers, body)| {
             utils::acquire_body_with_err(&headers, body).and_then(move |vec| {
                 // This happens only when we haven't sent the encrypted message
                 // for all the devices in the conversation (i.e., we don't have all the devices).
@@ -93,12 +92,12 @@ impl HttpsClient {
         Box::new(f)
     }
 
-    pub fn get_prekeys<T>(&self, data: T, handle: &Handle)
-        -> BerylliumFuture<DevicePreKeys>
+    fn get_prekeys<T>(&self, client: &HyperClient, data: T)
+                     -> BerylliumFuture<DevicePreKeys>
         where T: Serialize
     {
-        let f = self.request(Method::Post, "/bot/users/prekeys", Some(data), handle)
-                    .and_then(|(code, headers, body)| {
+        let f = self.request(client, Method::Post, "/bot/users/prekeys", Some(data));
+        let f = f.and_then(|(code, headers, body)| {
             utils::acquire_body_with_err(&headers, body).and_then(move |vec| {
                 if code == StatusCode::Ok {
                     info!("Successfully obtained prekeys for missing devices");
@@ -117,8 +116,10 @@ impl HttpsClient {
         Box::new(f)
     }
 
-    pub fn send_encrypted_message(&self, data: &GenericMessage, handle: Handle,
-                                  storage: Arc<StorageManager>, devices: Arc<Mutex<Devices>>)
+    pub fn send_encrypted_message(&self, client: &HyperClient,
+                                  data: &GenericMessage,
+                                  storage: Arc<StorageManager>,
+                                  devices: Arc<Mutex<Devices>>)
         -> BerylliumFuture<()>
     {
         let bytes = future_try!(data.write_to_bytes());
@@ -135,27 +136,35 @@ impl HttpsClient {
             }
         };
 
-        info!("Sending encrypted message...");
-        let mut devices_clone = devices_clone.clone();      // BAAAHHH!!!
         let client_clone = self.clone();
-        let f = self.send_message(message, &handle, false).and_then(move |stat| match stat {
-            MessageStatus::Sent => Box::new(future::ok(())) as BerylliumFuture<()>,
+        let client = client.clone();
+        let mut devices_clone = devices_clone.clone();      // BAAAHHH!!!
+
+        info!("Sending encrypted message...");
+        let f = self.send_message(&client, message, false);
+        let f = f.and_then(move |stat| match stat {
+            MessageStatus::Sent =>
+                Box::new(future::ok(())) as BerylliumFuture<()>,
             MessageStatus::Failed(devs) => {
                 info!("Getting prekeys for missing devices...");
-                let f = client_clone.get_prekeys(&devs.missing, &handle);
+                let f = client_clone.get_prekeys(&client, &devs.missing);
                 let f = f.and_then(move |keys| {
                     let mut new_data = HashMap::with_capacity(keys.len());
                     for (user_id, clients) in &keys {
                         for (client_id, prekey) in clients {
                             let prekey = future_try_box!(base64::decode(&prekey.key));
-                            let clients = new_data.entry(user_id.as_str()).or_insert(HashMap::new());
-                            let encrypted = future_try_box!(storage.encrypt(user_id.as_str(), client_id,
-                                                                            &bytes, &prekey));
+                            let clients = new_data.entry(user_id.as_str())
+                                                  .or_insert(HashMap::new());
+                            let res = storage.encrypt(user_id.as_str(), client_id,
+                                                      &bytes, &prekey);
+                            let encrypted = future_try_box!(res);
                             clients.entry(client_id.as_str()).or_insert(encrypted);
 
-                            // We've successfully encrypted the message for a new device with a new prekey.
-                            // Since we've already stored the session, we can safely update our devices.
-                            let clients = devices_clone.entry(user_id.clone()).or_insert(vec![]);
+                            // We've successfully encrypted the message for a new device
+                            // with a new prekey. Since we've already stored the session,
+                            // we can safely update our devices.
+                            let clients = devices_clone.entry(user_id.clone())
+                                                       .or_insert(vec![]);
                             clients.push(client_id.to_owned());
                         }
                     }
@@ -166,12 +175,13 @@ impl HttpsClient {
                         recipients: new_data,
                     };
 
-                    let f = client_clone.send_message(message, &handle, false).and_then(|stat| {
+                    let f = client_clone.send_message(&client, message, false);
+                    let f = f.and_then(move |stat| {
                         match stat {
                             MessageStatus::Sent => future::ok(()),
                             MessageStatus::Failed(_) => {
-                                let msg = String::from("Cannot send message! Failed after device check");
-                                future::err(BerylliumError::Other(msg))
+                                let msg = "Cannot send message! Failed after device check";
+                                future::err(BerylliumError::Other(String::from(msg)))
                             },
                         }
                     });
@@ -186,10 +196,12 @@ impl HttpsClient {
         Box::new(f)
     }
 
-    pub fn send_confirmation(&self, handle: Handle,
-                             message_id: &str, storage: Arc<StorageManager>,
+    pub fn send_confirmation(&self, client: &HyperClient,
+                             message_id: &str,
+                             storage: Arc<StorageManager>,
                              devices: Arc<Mutex<Devices>>)
-                            -> BerylliumFuture<()> {
+        -> BerylliumFuture<()>
+    {
         info!("Sending confirmation message...");
         let mut message = GenericMessage::new();
         let uuid = utils::uuid_v1();
@@ -198,7 +210,7 @@ impl HttpsClient {
         confirmation.set_message_id(message_id.to_owned());
         confirmation.set_field_type(ConfirmationType::DELIVERED);
         message.set_confirmation(confirmation);
-        self.send_encrypted_message(&message, handle, storage, devices)
+        self.send_encrypted_message(client, &message, storage, devices)
     }
 }
 
@@ -240,11 +252,11 @@ pub struct BotClient {
     sender: String,
     storage: Arc<StorageManager>,
     devices: Arc<Mutex<Devices>>,
-    event_loop_sender: Remote,
+    event_loop_sender: FutureSender<EventLoopRequest<()>>,
 }
 
-impl<'a> From<(&'a BotData, &'a Remote)> for BotClient {
-    fn from(data: (&'a BotData, &'a Remote)) -> BotClient {
+impl<'a> From<(&'a BotData, &'a FutureSender<EventLoopRequest<()>>)> for BotClient {
+    fn from(data: (&'a BotData, &'a FutureSender<EventLoopRequest<()>>)) -> BotClient {
         BotClient {
             inner: data.0.client.clone(),
             storage: data.0.storage.clone(),
@@ -261,23 +273,18 @@ impl BotClient {
         let (client, storage, devices) =
             (self.inner.clone(), self.storage.clone(), self.devices.clone());
 
-        let call_closure = Box::new(move |handle: &Handle| {
+        let call_closure = Box::new(move |c: &HyperClient| {
             let mut message = GenericMessage::new();
             let uuid = utils::uuid_v1();
             message.set_message_id(uuid.to_string());
             let mut txt = Text::new();
             txt.set_content(text.clone());
             message.set_text(txt);
-            client.send_encrypted_message(&message, handle.clone(),
-                                          storage, devices)
+            client.send_encrypted_message(c, &message, storage.clone(), devices.clone())
         });
 
-        self.event_loop_sender.spawn(move |handle: &Handle| {
-            if let Err(e) = call_closure(handle).wait() {
-                error!("Cannot send message: {}", e);
-            }
-
-            future::ok::<(), ()>(())
-        });
+        self.event_loop_sender.clone().send(call_closure).wait().map_err(|e| {
+            error!("Cannot queue user message in event loop: {}", e);
+        }).ok();
     }
 }

@@ -1,7 +1,8 @@
 use {protobuf, utils};
 use client::{BotClient, BotData};
 use errors::{BerylliumError, BerylliumResult};
-use futures::{Future, future};
+use futures::{Future, Sink, future};
+use futures::sync::mpsc::Sender as FutureSender;
 use futures_cpupool::{Builder, CpuFuture, CpuPool};
 use hyper::{Body, Error as HyperError, Headers, Method, StatusCode};
 use hyper::header::{Authorization, Bearer};
@@ -12,9 +13,9 @@ use serde_json::{self, Value as SerdeValue};
 use storage::StorageManager;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio_core::reactor::{Handle, Remote};
 use types::{BotCreationData, BotCreationResponse, Event, EventData};
 use types::{ConversationData, ConversationEventType, MessageData, Member};
+use types::{HyperClient, EventLoopRequest};
 use uuid::Uuid;
 
 // TODO:
@@ -32,16 +33,16 @@ pub struct BotHandler<H> {
     handler: Arc<H>,
     pool: Arc<CpuPool>,
     bot_data: Arc<Mutex<HashMap<Uuid, Arc<Mutex<BotData>>>>>,
-    event_loop_sender: Remote,
+    event_loop_sender: FutureSender<EventLoopRequest<()>>,
 }
 
 impl<H: Handler> BotHandler<H> {
-    pub fn new(handler: Arc<H>, remote: Remote) -> BotHandler<H> {
+    pub fn new(handler: Arc<H>, sender: FutureSender<EventLoopRequest<()>>) -> BotHandler<H> {
         BotHandler {
             handler: handler,
             pool: Arc::new(Builder::new().create()),
             bot_data: Arc::new(Mutex::new(HashMap::new())),
-            event_loop_sender: remote,
+            event_loop_sender: sender,
         }
     }
 }
@@ -104,8 +105,8 @@ impl<H: Handler> Service for BotHandler<H> {
                 let handler = self.handler.clone();
                 let bot_id = String::from(id);
                 let bot_data = self.bot_data.clone();
-                let remote = self.event_loop_sender.clone();
-                parse_json_and!(handle_events, pool, remote,
+                let sender = self.event_loop_sender.clone();
+                parse_json_and!(handle_events, pool, sender,
                                 bot_data, bot_id, handler)
             },
             _ => parse_json_and!(empty_response, headers),
@@ -139,7 +140,7 @@ fn create_bot(data: BotCreationData, resp: &mut Response) -> BerylliumResult<()>
     Ok(())
 }
 
-fn handle_events<H>(pool: Arc<CpuPool>, remote: Remote,
+fn handle_events<H>(pool: Arc<CpuPool>, job_sender: FutureSender<EventLoopRequest<()>>,
                     bot_data: Arc<Mutex<HashMap<Uuid, Arc<Mutex<BotData>>>>>,
                     bot_id: String, handler: Arc<H>,
                     data: MessageData, resp: &mut Response)
@@ -163,7 +164,6 @@ fn handle_events<H>(pool: Arc<CpuPool>, remote: Remote,
 
     // NOTE: Since we have `Arc<Mutex<BotData>>`, we won't block the
     // requests related to other conversations.
-    let mut future_resolution = None;
     let mut event_occurred = None;
 
     match (data.type_, &data.data) {
@@ -180,9 +180,11 @@ fn handle_events<H>(pool: Arc<CpuPool>, remote: Remote,
 
             // We can decrypt and decode the message - 200 OK
             let msg_id = message.get_message_id().to_owned();
-            future_resolution = Some(Box::new(move |handle: &Handle| {
-                client.send_confirmation(handle.clone(), &msg_id, storage, devices)
-            }));
+            job_sender.clone().send(Box::new(move |c: &HyperClient| {
+                client.send_confirmation(c, &msg_id, storage.clone(), devices.clone())
+            })).wait().map_err(|e| {
+                error!("Cannot queue confirmation message in event loop: {}", e);
+            }).ok();
 
             if message.has_text() {     // FIXME: Handle images
                 info!("Got text message.");
@@ -279,19 +281,8 @@ fn handle_events<H>(pool: Arc<CpuPool>, remote: Remote,
     if let Some(event_data) = event_occurred {
         let client = {
             let lock = this_bot_data.lock();
-            BotClient::from((&*lock, &remote))
+            BotClient::from((&*lock, &job_sender))
         };
-
-        if let Some(call_closure) = future_resolution {
-            remote.spawn(move |handle: &Handle| {
-                info!("Resolving future inside the event loop...");
-                if let Err(e) = call_closure(handle).wait() {
-                    error!("Cannot spawn future: {}", e);
-                }
-
-                future::ok::<(), ()>(())
-            });
-        }
 
         let handle: CpuFuture<(), ()> = pool.spawn_fn(move || {
             info!("Handling user event...");

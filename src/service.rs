@@ -1,7 +1,10 @@
 use errors::{BerylliumError, BerylliumResult};
-use futures::{Async, Future, Poll};
+use futures::{Future, Stream};
+use futures::sync::mpsc as futures_mpsc;
 use handlers::{BotHandler, Handler};
+use hyper::Client;
 use hyper::server::Http;
+use hyper_rustls::HttpsConnector;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls::internal::pemfile;
 use std::fs::File;
@@ -13,6 +16,7 @@ use std::thread;
 use tokio_core::reactor::Core;
 use tokio_rustls::proto::Server;
 use tokio_proto::TcpServer;
+use types::EventLoopRequest;
 use utils;
 
 pub struct BotService {
@@ -64,33 +68,29 @@ impl BotService {
     pub fn start_listening<H>(self, addr: &SocketAddr, handler: H)
         where H: Handler
     {
-        let mut core = Core::new().expect("event loop creation");
         let https_server = Server::new(Http::new(), Arc::new(self.config));
         let tcp_server = TcpServer::new(https_server, addr.clone());
+        let (tx, rx) = futures_mpsc::channel(0);
         let handler = Arc::new(handler);
-        let remote = core.remote();
 
-        // Separate thread has the HTTPS server itself. It has the
-        // handle to spawn closures into the main event loop.
         let _ = thread::spawn(move || {
-            tcp_server.serve(move || {
-                Ok(BotHandler::new(handler.clone(), remote.clone()))
+            let mut core = Core::new().expect("event loop creation");
+            let handle = core.handle();
+            let https = HttpsConnector::new(4, &handle);
+            let client = Client::configure().connector(https).build(&handle);
+            debug!("Created listener queue for requests!");
+
+            let listen_messages = rx.for_each(|call: EventLoopRequest<()>| {
+                call(&client).map_err(|e| {
+                    info!("Error resolving closure: {}", e);
+                })
             });
+
+            core.run(listen_messages).expect("running event loop");
         });
 
-        // The event loop runs only for making hyper client requests.
-        core.run(NeverEndingFuture).expect("running event loop");
-    }
-}
-
-/// Zero-sized struct just to keep the event loop running.
-struct NeverEndingFuture;
-
-impl Future for NeverEndingFuture {
-    type Item = ();
-    type Error = ();
-
-    fn poll(&mut self) -> Poll<(), ()> {
-        Ok(Async::NotReady)
+        tcp_server.serve(move || {
+            Ok(BotHandler::new(handler.clone(), tx.clone()))
+        });
     }
 }

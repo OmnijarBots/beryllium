@@ -22,13 +22,14 @@ extern crate uuid_v1;
 
 #[macro_use] mod utils;
 mod client;
-mod errors;
 mod handlers;
 mod service;
 mod storage;
 mod types;
 
 include!(concat!(env!("OUT_DIR"), "/messages.rs"));
+
+pub mod errors;
 
 pub use client::BotClient;
 pub use handlers::Handler;

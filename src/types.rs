@@ -1,5 +1,7 @@
 use errors::BerylliumError;
 use futures::Future;
+use hyper::Client;
+use hyper_rustls::HttpsConnector;
 use serde::de::{Deserialize, Deserializer, Error as DecodeError};
 use serde_json::Value;
 use std::borrow::Borrow;
@@ -10,6 +12,8 @@ use uuid::Uuid;
 // which are too generic
 
 pub type BerylliumFuture<I> = Box<Future<Item=I, Error=BerylliumError>>;
+pub type EventLoopRequest<I> = Box<Fn(&HyperClient) -> BerylliumFuture<I> + Send + 'static>;
+pub type HyperClient = Client<HttpsConnector>;
 
 pub enum Event {
     ConversationMemberJoin {
