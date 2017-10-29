@@ -8,13 +8,18 @@ use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use uuid::Uuid;
-// FIXME: Check the types for id (String), i32, etc.
-// which are too generic
 
-pub type BerylliumFuture<I> = Box<Future<Item=I, Error=BerylliumError>>;
-pub type EventLoopRequest<I> = Box<Fn(&HyperClient) -> BerylliumFuture<I> + Send + 'static>;
+// FIXME: Check the types (for example, id should be Uuid instead of String),
+
+/// HTTPS client (courtesy of rustls)
 pub type HyperClient = Client<HttpsConnector>;
+/// The `Future` type used throughout the lib.
+pub type BerylliumFuture<I> = Box<Future<Item=I, Error=BerylliumError>>;
+/// A closure which takes a HTTPS client and returns a `Future`. This is
+/// how HTTPS client requests are queued in the event loop.
+pub type EventLoopRequest<I> = Box<Fn(&HyperClient) -> BerylliumFuture<I> + Send + 'static>;
 
+/// Represents the type of event handed over to the user.
 pub enum Event {
     ConversationMemberJoin {
         members_joined: Vec<Uuid>,
@@ -25,24 +30,30 @@ pub enum Event {
     ConversationRename,
     Message {
         text: String,
-        from: String,
+        from: String,       // FIXME: Should be `Uuid`
     },
     Image,
 }
 
+/// Event data passed to the type implementing the `Handler` trait.
 pub struct EventData {
+    /// ID of this bot instance.
     pub bot_id: Uuid,
+    /// Conversation data
     pub conversation: Conversation,
+    /// Event-type and related data (if any)
     pub event: Event,
 }
 
+/// Represents a conversation member.
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Member {
     pub id: Uuid,
     pub status: i8,
 }
 
-// Implementations for HashSet addressing
+// Custom implementations for HashSet addressing.
+// We don't care about anything other than the member's UUID.
 impl Borrow<Uuid> for Member {
     fn borrow(&self) -> &Uuid {
         &self.id

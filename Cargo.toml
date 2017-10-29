@@ -29,7 +29,7 @@ uuid = { version = "0.5", features = ["serde"] }
 # For musl support, interfaces-rs should be bumped, followed by uuid_v1
 # Until then, we gotta work around.
 [dependencies.uuid_v1]
-git = "git://github.com/wafflespeanut/uuid_v1_rs"
+git = "https://github.com/wafflespeanut/uuid_v1_rs"
 
 [build-dependencies]
 protoc-rust = "1.4"
