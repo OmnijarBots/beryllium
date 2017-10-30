@@ -2,6 +2,7 @@ use errors::{BerylliumError, BerylliumResult};
 use futures::{Future, Stream, future};
 use hyper::{Body, Error as HyperError, Headers};
 use hyper::header::{ContentLength, Header};
+use md5::Md5;
 use openssl::rand;
 use openssl::symm::{self, Cipher};
 use parking_lot::RwLock;
@@ -122,11 +123,16 @@ impl MultipartWriter {
     }
 }
 
+pub fn md5_hash(data: &[u8]) -> Vec<u8> {
+    let digest = Md5::digest(data);
+    Vec::from(digest.as_slice())
+}
+
 pub fn encrypt(data: &[u8]) -> BerylliumResult<EncryptData> {
     let cipher = Cipher::aes_256_cbc();
-    let mut iv = vec![0; cipher.iv_len().unwrap()];
+    let mut iv = vec![0; cipher.iv_len().unwrap()];     // 16 bytes
     rand::rand_bytes(&mut iv)?;
-    let mut key = vec![0; cipher.key_len()];
+    let mut key = vec![0; cipher.key_len()];    // 32 bytes
     rand::rand_bytes(&mut key)?;
     let mut bytes = symm::encrypt(cipher, &key, Some(&iv), data)?;
     let hash = Sha256::digest(&bytes);

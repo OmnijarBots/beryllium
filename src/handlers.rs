@@ -20,8 +20,7 @@ use uuid::Uuid;
 
 // TODO:
 // - Isolate events into their own functions.
-// - Revisit `clone` usage on various types.
-// - Revisit usage of Arc's, Mutex'es and event loop handles.
+// - Revisit usage of Arc's, Mutex'es and clones.
 
 // FIXME: I've used a lot of Arcs throughout. I *know* that Arc has an overhead,
 // but I'm not entirely sure about the performance impact of this in our case

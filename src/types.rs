@@ -1,7 +1,9 @@
 use errors::BerylliumError;
 use futures::Future;
 use hyper::Client;
+use hyper::header::ContentType;
 use hyper_rustls::HttpsConnector;
+use mime::{IMAGE_BMP, IMAGE_GIF};
 use serde::de::{Deserialize, Deserializer, Error as DecodeError};
 use serde_json::Value;
 use std::borrow::Borrow;
@@ -177,10 +179,16 @@ pub struct MessageRequest<'a, 'b> {
     pub recipients: HashMap<&'b str, HashMap<&'b str, String>>,
 }
 
+#[derive(Serialize)]
+pub struct AssetUploadRequest<'a> {
+    pub public: bool,
+    pub retention: &'a str,
+}
+
 #[derive(Deserialize)]
 pub struct AssetData {
-    key: String,
-    token: String,
+    pub key: String,
+    pub token: String,
 }
 
 pub enum MessageStatus {
@@ -192,4 +200,55 @@ pub struct EncryptData {
     pub key: Vec<u8>,
     pub data: Vec<u8>,
     pub hash: Vec<u8>,
+}
+
+pub struct Image {
+    pub fmt: ImageFormat,
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
+}
+
+impl Image {
+    pub fn copy_without_data(&self) -> Image {
+        Image {
+            fmt: self.fmt,
+            width: self.width,
+            height: self.height,
+            data: vec![],
+        }
+    }
+}
+
+// NOTE: If you want more, feel free to open a PR! :)
+#[derive(Clone, Copy)]
+pub enum ImageFormat {
+    Bmp,
+    Gif,
+    Jpeg,
+    Png,
+}
+
+impl ImageFormat {
+    pub fn mime(&self) -> String {
+        let s = match *self {
+            ImageFormat::Bmp  => "image/bmp",
+            ImageFormat::Gif  => "image/gif",
+            ImageFormat::Jpeg => "image/jpeg",
+            ImageFormat::Png  => "image/png",
+        };
+
+        s.to_owned()
+    }
+}
+
+impl Into<ContentType> for ImageFormat {
+    fn into(self) -> ContentType {
+        match self {
+            ImageFormat::Bmp  => ContentType(IMAGE_BMP),
+            ImageFormat::Gif  => ContentType(IMAGE_GIF),
+            ImageFormat::Jpeg => ContentType::jpeg(),
+            ImageFormat::Png  => ContentType::png(),
+        }
+    }
 }

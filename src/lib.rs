@@ -4,9 +4,9 @@ extern crate futures;
 extern crate futures_cpupool;
 #[macro_use] extern crate hyper;
 extern crate hyper_rustls;
-extern crate image;
 #[macro_use] extern crate lazy_static;
 #[macro_use] extern crate log;
+extern crate md_5 as md5;
 extern crate mime;
 extern crate openssl;
 extern crate parking_lot;
@@ -36,6 +36,5 @@ pub mod errors;
 
 pub use client::BotClient;
 pub use handlers::Handler;
-pub use image::ImageFormat;
 pub use service::BotService;
-pub use types::{Event, EventData};
+pub use types::{Event, EventData, ImageFormat};

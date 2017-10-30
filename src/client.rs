@@ -4,22 +4,20 @@ use futures::{Future, Sink, future};
 use futures::sync::mpsc::Sender as FutureSender;
 use hyper::{Body, Method, Request, StatusCode};
 use hyper::header::{Authorization, Bearer, ContentLength, ContentType, Headers};
-use image::ImageFormat;
-use messages_proto::{Confirmation, GenericMessage, Text};
-use messages_proto::Confirmation_Type as ConfirmationType;
+use messages_proto::{Asset, Confirmation, GenericMessage, Text};
+use messages_proto::{Asset_ImageMetaData, Asset_Original, Asset_RemoteData, Confirmation_Type};
 use mime::Mime;
 use parking_lot::Mutex;
 use protobuf::Message;
 use serde::Serialize;
 use serde_json::{self, Value as SerdeValue};
 use std::collections::HashMap;
-use std::io::{BufRead, Seek};
 use std::mem;
 use std::sync::Arc;
 use storage::StorageManager;
+use types::{AssetData, AssetUploadRequest, Image};
 use types::{BerylliumFuture, BotCreationData, Devices, DevicePreKeys};
 use types::{EventLoopRequest, HyperClient, MessageRequest, MessageStatus};
-use types::AssetData;
 use utils::MultipartWriter;
 use uuid::Uuid;
 
@@ -241,17 +239,43 @@ impl HttpsClient {
         message.set_message_id(uuid.to_string());
         let mut confirmation = Confirmation::new();
         confirmation.set_message_id(message_id.to_owned());
-        confirmation.set_field_type(ConfirmationType::DELIVERED);
+        confirmation.set_field_type(Confirmation_Type::DELIVERED);
         message.set_confirmation(confirmation);
         self.send_encrypted_message(client, &message, storage, devices)
     }
 
     /// Upload a given asset to Wire servers and return the asset key and token.
-    fn upload_asset(&self, client: &HyperClient, data: &[u8])
-                   -> BerylliumFuture<AssetData> {
+    fn upload_asset<T>(&self, client: &HyperClient, req_data: T,
+                       asset_data: &[u8], asset_type: ContentType)
+                       -> BerylliumFuture<AssetData>
+        where T: Serialize
+    {
+        // Start writing multipart data
+        let mut writer = MultipartWriter::new(MULTIPART_BOUNDARY);
+
+        // Asset upload request JSON
+        writer.add_boundary();
+        writer.add_header(ContentType::json());
+        let json_bytes = future_try!(serde_json::to_vec(&req_data));
+        writer.add_header(ContentLength(json_bytes.len() as u64));
+        writer.add_line();
+        writer.add_body(&json_bytes);
+
+        // AES-256-CBC encrypted asset data
+        writer.add_boundary();
+        writer.add_header(asset_type);
+        writer.add_header(ContentLength(asset_data.len() as u64));
+        let hash = utils::md5_hash(&asset_data);
+        writer.add_header(ContentMd5(base64::encode(&hash)));
+        writer.add_line();
+        writer.add_body(&asset_data);
+        writer.add_boundary();
+        let multipart = writer.finish();
+
         let mut request = self.prepare_request_for_url(Method::Post, "/bots/assets");
         request.headers_mut().set(ContentType(MULTIPART_MIXED.clone()));
-        request.headers_mut().set(ContentLength(data.len() as u64));
+        request.headers_mut().set(ContentLength(multipart.len() as u64));
+        request.set_body(multipart);
 
         let f = HttpsClient::request_with_request(client, request)
                             .and_then(|(code, headers, body)| {
@@ -350,9 +374,51 @@ impl BotClient {
     }
 
     /// Send an user image to the associated conversation.
-    pub fn send_image<R>(&self, data: &[u8], fmt: ImageFormat)
-        where R: BufRead + Seek
-    {
-        //
+    pub fn send_image(&self, img: Image) {
+        let (client, storage, devices) =
+            (self.inner.clone(), self.storage.clone(), self.devices.clone());
+
+        let call_closure = Box::new(move |c: &HyperClient| {
+            let enc_data = future_try_box!(utils::encrypt(&img.data));
+            let img_size = img.data.len();
+            let img = img.copy_without_data();
+            let req_data = AssetUploadRequest {
+                public: false,
+                retention: "volatile",
+            };
+
+            let f = client.upload_asset(c, req_data, &enc_data.data, img.fmt.into());
+            let (c, client, storage, devices) =
+                (c.clone(), client.clone(), storage.clone(), devices.clone());
+
+            let f = f.and_then(move |asset_data| {
+                let mut message = GenericMessage::new();
+                let uuid = utils::uuid_v1();
+                message.set_message_id(uuid.to_string());
+                let mut asset = Asset::new();
+                let mut original = Asset_Original::new();
+                original.set_mime_type(img.fmt.mime());
+                original.set_size(img_size as u64);
+                let mut meta = Asset_ImageMetaData::new();
+                meta.set_width(img.width as i32);
+                meta.set_height(img.height as i32);
+                original.set_image(meta);
+                asset.set_original(original);
+                let mut upload_data = Asset_RemoteData::new();
+                upload_data.set_otr_key(enc_data.key);
+                upload_data.set_sha256(enc_data.hash);
+                upload_data.set_asset_id(asset_data.key);
+                upload_data.set_asset_token(asset_data.token);
+                asset.set_uploaded(upload_data);
+                message.set_asset(asset);
+                client.send_encrypted_message(&c, &message, storage.clone(), devices.clone())
+            });
+
+            Box::new(f)
+        });
+
+        self.event_loop_sender.clone().send(call_closure).wait().map_err(|e| {
+            error!("Cannot queue user image in event loop: {}", e);
+        }).ok();
     }
 }
