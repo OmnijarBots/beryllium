@@ -2,6 +2,7 @@ use base64::DecodeError as B64DecodeError;
 use cryptobox::CBoxError;
 use cryptobox::store::file::FileStore;
 use hyper::Error as HyperError;
+use openssl::error::ErrorStack;
 use proteus::{DecodeError, EncodeError};
 use protobuf::error::ProtobufError;
 use serde_json::error::Error as SerdeError;
@@ -17,6 +18,7 @@ pub type BerylliumResult<T> = Result<T, BerylliumError>;
 pub enum BerylliumError {
     Io(io::Error),
     CBox(CBoxError<FileStore>),
+    Openssl(ErrorStack),
     Encode(EncodeError),
     Decode(DecodeError),
     Hyper(HyperError),
@@ -34,6 +36,7 @@ impl Display for BerylliumError {
         match *self {
             BerylliumError::CBox(ref e)     => write!(f, "Cryptobox error: {}", e),
             BerylliumError::Io(ref e)       => write!(f, "I/O error: {}", e),
+            BerylliumError::Openssl(ref e)  => write!(f, "Openssl error: {}", e),
             BerylliumError::Encode(ref e)   => write!(f, "Encode error: {}", e),
             BerylliumError::Decode(ref e)   => write!(f, "Decode error: {}", e),
             BerylliumError::Hyper(ref e)    => write!(f, "Hyper error: {}", e),
@@ -56,6 +59,7 @@ impl Error for BerylliumError {
     fn cause(&self) -> Option<&Error> {
         match *self {
             BerylliumError::CBox(ref e)     => Some(e),
+            BerylliumError::Openssl(ref e)  => Some(e),
             BerylliumError::Io(ref e)       => Some(e),
             BerylliumError::Decode(ref e)   => Some(e),
             BerylliumError::Encode(ref e)   => Some(e),
@@ -72,6 +76,12 @@ impl Error for BerylliumError {
 impl From<io::Error> for BerylliumError {
     fn from(e: io::Error) -> BerylliumError {
         BerylliumError::Io(e)
+    }
+}
+
+impl From<ErrorStack> for BerylliumError {
+    fn from(e: ErrorStack) -> BerylliumError {
+        BerylliumError::Openssl(e)
     }
 }
 

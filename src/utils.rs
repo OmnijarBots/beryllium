@@ -1,10 +1,13 @@
-use errors::BerylliumError;
+use errors::{BerylliumError, BerylliumResult};
 use futures::{Future, Stream, future};
 use hyper::{Body, Error as HyperError, Headers};
 use hyper::header::ContentLength;
+use openssl::rand;
+use openssl::symm::{self, Cipher};
 use parking_lot::RwLock;
+use sha2::{Sha256, Digest};
 use std::path::{Path, PathBuf};
-use types::BerylliumFuture;
+use types::{BerylliumFuture, EncryptData};
 
 pub use uuid_v1::new_v1 as uuid_v1;
 
@@ -73,4 +76,21 @@ macro_rules! future_try_box {
             Err(e) => return Box::new(future::err(e.into())) as BerylliumFuture<_>
         }
     };
+}
+
+pub fn encrypt(data: &[u8]) -> BerylliumResult<EncryptData> {
+    let cipher = Cipher::aes_256_cbc();
+    let mut iv = vec![0; cipher.iv_len().unwrap()];
+    rand::rand_bytes(&mut iv)?;
+    let mut key = vec![0; cipher.key_len()];
+    rand::rand_bytes(&mut key)?;
+    let bytes = symm::encrypt(cipher, &key, Some(&iv), data)?;
+    let hash = Sha256::digest(&bytes);
+
+    Ok(EncryptData {
+        iv: iv,
+        key: key,
+        data: bytes,
+        hash: Vec::from(hash.as_slice()),
+    })
 }

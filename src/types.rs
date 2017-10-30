@@ -181,3 +181,10 @@ pub enum MessageStatus {
     Sent,
     Failed(Devices),
 }
+
+pub struct EncryptData {
+    pub iv: Vec<u8>,
+    pub key: Vec<u8>,
+    pub data: Vec<u8>,
+    pub hash: Vec<u8>,
+}
