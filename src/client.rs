@@ -3,22 +3,38 @@ use errors::{BerylliumError, BerylliumResult};
 use futures::{Future, Sink, future};
 use futures::sync::mpsc::Sender as FutureSender;
 use hyper::{Body, Method, Request, StatusCode};
-use hyper::header::{Authorization, Bearer, ContentType, Headers};
+use hyper::header::{Authorization, Bearer, ContentLength, ContentType, Headers};
+use image::ImageFormat;
 use messages_proto::{Confirmation, GenericMessage, Text};
 use messages_proto::Confirmation_Type as ConfirmationType;
+use mime::Mime;
 use parking_lot::Mutex;
 use protobuf::Message;
 use serde::Serialize;
 use serde_json::{self, Value as SerdeValue};
 use std::collections::HashMap;
+use std::io::{BufRead, Seek};
 use std::mem;
 use std::sync::Arc;
 use storage::StorageManager;
 use types::{BerylliumFuture, BotCreationData, Devices, DevicePreKeys};
 use types::{EventLoopRequest, HyperClient, MessageRequest, MessageStatus};
+use types::AssetData;
+use utils::MultipartWriter;
 use uuid::Uuid;
 
 const HOST_ADDRESS: &'static str = "https://prod-nginz-https.wire.com";
+const MULTIPART_BOUNDARY: &'static str = "frontier";
+lazy_static! {
+    static ref MULTIPART_MIXED: Mime = {
+        let mime_str = format!("multipart/mixed; boundary={}", MULTIPART_BOUNDARY);
+        mime_str.parse().unwrap()
+    };
+}
+
+header! {
+    (ContentMd5, "Content-MD5") => [String]     // base64-encoded MD5 hash digest
+}
 
 /// Private client to isolate some methods.
 #[derive(Clone)]
@@ -28,18 +44,38 @@ pub struct HttpsClient {
 }
 
 impl HttpsClient {
-    /// Generic request builder for all API requests.
-    fn request<T>(&self, client: &HyperClient, method: Method, rel_url: &str, data: Option<T>)
-                 -> BerylliumFuture<(StatusCode, Headers, Body)>
-        where T: Serialize
-    {
+    fn prepare_request_for_url(&self, method: Method, rel_url: &str) -> Request {
         let url = format!("{}{}", HOST_ADDRESS, rel_url);
         info!("{}: {}", method, url);
         let mut request = Request::new(method, url.parse().unwrap());
-        request.headers_mut().set(ContentType::json());
         request.headers_mut().set(Authorization(Bearer {
             token: self.auth_token.to_owned(),
         }));
+
+        request
+    }
+
+    fn request_with_request(client: &HyperClient, request: Request)
+                           -> BerylliumFuture<(StatusCode, Headers, Body)>
+    {
+        let f = client.request(request).and_then(|mut resp| {
+            let code = resp.status();
+            debug!("Got {} response", code);
+            let hdrs = mem::replace(resp.headers_mut(), Headers::new());
+            future::ok((code, hdrs, resp.body()))
+        }).map_err(BerylliumError::from);
+
+        Box::new(f)
+    }
+
+    /// Generic request builder for all API requests.
+    fn request<T>(&self, client: &HyperClient, method: Method,
+                  rel_url: &str, data: Option<T>)
+                 -> BerylliumFuture<(StatusCode, Headers, Body)>
+        where T: Serialize
+    {
+        let mut request = self.prepare_request_for_url(method, rel_url);
+        request.headers_mut().set(ContentType::json());
 
         if let Some(object) = data {
             let res = serde_json::to_vec(&object).map(|bytes| {   // FIXME: Error?
@@ -50,14 +86,7 @@ impl HttpsClient {
             future_try!(res);
         }
 
-        let f = client.request(request).and_then(|mut resp| {
-            let code = resp.status();
-            debug!("Got {} response", code);
-            let hdrs = mem::replace(resp.headers_mut(), Headers::new());
-            future::ok((code, hdrs, resp.body()))
-        }).map_err(BerylliumError::from);
-
-        Box::new(f)
+        HttpsClient::request_with_request(client, request)
     }
 
     /// Send raw message. This is usually called by `send_encrypted_message`
@@ -216,6 +245,33 @@ impl HttpsClient {
         message.set_confirmation(confirmation);
         self.send_encrypted_message(client, &message, storage, devices)
     }
+
+    /// Upload a given asset to Wire servers and return the asset key and token.
+    fn upload_asset(&self, client: &HyperClient, data: &[u8])
+                   -> BerylliumFuture<AssetData> {
+        let mut request = self.prepare_request_for_url(Method::Post, "/bots/assets");
+        request.headers_mut().set(ContentType(MULTIPART_MIXED.clone()));
+        request.headers_mut().set(ContentLength(data.len() as u64));
+
+        let f = HttpsClient::request_with_request(client, request)
+                            .and_then(|(code, headers, body)| {
+            utils::acquire_body_with_err(&headers, body).and_then(move |vec| {
+                if code.is_success() {
+                    info!("Successfully uploaded asset.");
+                    let res = serde_json::from_slice::<AssetData>(&vec)
+                                         .map_err(BerylliumError::from);
+                    future::result(res)
+                } else {
+                    let res = serde_json::from_slice::<SerdeValue>(&vec)
+                                         .map_err(BerylliumError::from);
+                    let msg = format!("Error uploading asset. Response: {:?}", res);
+                    future::err(BerylliumError::Other(msg))
+                }
+            })
+        });
+
+        Box::new(f)
+    }
 }
 
 impl<'a> From<&'a BotCreationData> for HttpsClient {
@@ -291,5 +347,12 @@ impl BotClient {
         self.event_loop_sender.clone().send(call_closure).wait().map_err(|e| {
             error!("Cannot queue user message in event loop: {}", e);
         }).ok();
+    }
+
+    /// Send an user image to the associated conversation.
+    pub fn send_image<R>(&self, data: &[u8], fmt: ImageFormat)
+        where R: BufRead + Seek
+    {
+        //
     }
 }

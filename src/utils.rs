@@ -1,11 +1,12 @@
 use errors::{BerylliumError, BerylliumResult};
 use futures::{Future, Stream, future};
 use hyper::{Body, Error as HyperError, Headers};
-use hyper::header::ContentLength;
+use hyper::header::{ContentLength, Header};
 use openssl::rand;
 use openssl::symm::{self, Cipher};
 use parking_lot::RwLock;
 use sha2::{Sha256, Digest};
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use types::{BerylliumFuture, EncryptData};
 
@@ -78,19 +79,64 @@ macro_rules! future_try_box {
     };
 }
 
+pub struct MultipartWriter {
+    boundary: String,
+    inner: Vec<u8>,
+}
+
+impl MultipartWriter {
+    pub fn new(boundary: &str) -> MultipartWriter {
+        MultipartWriter {
+            boundary: boundary.to_owned(),
+            inner: vec![],
+        }
+    }
+
+    #[inline]
+    pub fn add_line(&mut self) {
+        self.inner.extend_from_slice("\r\n".as_bytes());
+    }
+
+    #[inline]
+    pub fn add_boundary(&mut self) {
+        self.inner.extend_from_slice("--".as_bytes());
+        self.inner.extend_from_slice(self.boundary.as_bytes());
+        self.add_line();
+    }
+
+    #[inline]
+    pub fn add_header<H: Header + Display>(&mut self, header: H) {
+        self.inner.extend_from_slice(header.to_string().as_bytes());
+        self.add_line();
+    }
+
+    #[inline]
+    pub fn add_body(&mut self, data: &[u8]) {
+        self.inner.extend_from_slice(data);
+        self.add_line();
+    }
+
+    #[inline]
+    pub fn finish(self) -> Vec<u8> {
+        self.inner
+    }
+}
+
 pub fn encrypt(data: &[u8]) -> BerylliumResult<EncryptData> {
     let cipher = Cipher::aes_256_cbc();
     let mut iv = vec![0; cipher.iv_len().unwrap()];
     rand::rand_bytes(&mut iv)?;
     let mut key = vec![0; cipher.key_len()];
     rand::rand_bytes(&mut key)?;
-    let bytes = symm::encrypt(cipher, &key, Some(&iv), data)?;
+    let mut bytes = symm::encrypt(cipher, &key, Some(&iv), data)?;
     let hash = Sha256::digest(&bytes);
+    // First block is IV
+    let mut out = iv.clone();
+    out.append(&mut bytes);
 
     Ok(EncryptData {
-        iv: iv,
         key: key,
-        data: bytes,
+        data: out,
         hash: Vec::from(hash.as_slice()),
     })
 }

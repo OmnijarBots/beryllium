@@ -177,13 +177,18 @@ pub struct MessageRequest<'a, 'b> {
     pub recipients: HashMap<&'b str, HashMap<&'b str, String>>,
 }
 
+#[derive(Deserialize)]
+pub struct AssetData {
+    key: String,
+    token: String,
+}
+
 pub enum MessageStatus {
     Sent,
     Failed(Devices),
 }
 
 pub struct EncryptData {
-    pub iv: Vec<u8>,
     pub key: Vec<u8>,
     pub data: Vec<u8>,
     pub hash: Vec<u8>,
