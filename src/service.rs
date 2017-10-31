@@ -49,6 +49,11 @@ impl BotService {
         Ok(keys.pop().unwrap())
     }
 
+    /// Initialize the service with the given auth token (obtained from devbot),
+    /// storage, private key and certificate paths.
+    ///
+    /// Note that the certificate and the (RSA) private key should be
+    /// in PEM format.
     pub fn new<P>(auth: String, store_path: P, key_path: P, cert_path: P)
                   -> BerylliumResult<BotService>
         where P: AsRef<Path>
@@ -65,6 +70,12 @@ impl BotService {
         })
     }
 
+    /// Start listening for incoming HTTPS requests (indefinitely), and forward
+    /// events to the associated handler.
+    ///
+    /// This has two threads - one for serving HTTPS requests from
+    /// the Wire server, and another for running an event loop
+    /// which makes HTTPS requests to the Wire server.
     pub fn start_listening<H>(self, addr: &SocketAddr, handler: H)
         where H: Handler
     {
@@ -78,7 +89,7 @@ impl BotService {
             let handle = core.handle();
             let https = HttpsConnector::new(4, &handle);
             let client = Client::configure().connector(https).build(&handle);
-            debug!("Created listener queue for requests!");
+            info!("Created listener queue for requests!");
 
             let listen_messages = rx.for_each(|call: EventLoopRequest<()>| {
                 call(&client).map_err(|e| {

@@ -20,16 +20,15 @@ use uuid::Uuid;
 
 const HOST_ADDRESS: &'static str = "https://prod-nginz-https.wire.com";
 
+/// Private client to isolate some methods.
 #[derive(Clone)]
 pub struct HttpsClient {
-    client: String,
+    client_id: String,
     auth_token: String,
 }
 
-// FIXME: Figure out how we can eliminate/improve the usage of tokio-core event loop
-// (which is here only for the sake of establishing TLS connection)
-
 impl HttpsClient {
+    /// Generic request builder for all API requests.
     fn request<T>(&self, client: &HyperClient, method: Method, rel_url: &str, data: Option<T>)
                  -> BerylliumFuture<(StatusCode, Headers, Body)>
         where T: Serialize
@@ -53,6 +52,7 @@ impl HttpsClient {
 
         let f = client.request(request).and_then(|mut resp| {
             let code = resp.status();
+            debug!("Got {} response", code);
             let hdrs = mem::replace(resp.headers_mut(), Headers::new());
             future::ok((code, hdrs, resp.body()))
         }).map_err(BerylliumError::from);
@@ -60,11 +60,13 @@ impl HttpsClient {
         Box::new(f)
     }
 
+    /// Send raw message. This is usually called by `send_encrypted_message`
     fn send_message<T>(&self, client: &HyperClient,
                        data: T, ignore_missing: bool)
                       -> BerylliumFuture<MessageStatus>
         where T: Serialize
     {
+        info!("Sending message...");
         let url = format!("/bot/messages?ignore_missing={}", ignore_missing);
         let f = self.request(client, Method::Post, &url, Some(data));
         let f = f.and_then(|(code, headers, body)| {
@@ -92,6 +94,7 @@ impl HttpsClient {
         Box::new(f)
     }
 
+    /// Get the device prekeys.
     fn get_prekeys<T>(&self, client: &HyperClient, data: T)
                      -> BerylliumFuture<DevicePreKeys>
         where T: Serialize
@@ -116,6 +119,7 @@ impl HttpsClient {
         Box::new(f)
     }
 
+    /// Used to send all messages encrypted with the appropriate device prekeys.
     pub fn send_encrypted_message(&self, client: &HyperClient,
                                   data: &GenericMessage,
                                   storage: Arc<StorageManager>,
@@ -123,31 +127,30 @@ impl HttpsClient {
         -> BerylliumFuture<()>
     {
         let bytes = future_try!(data.write_to_bytes());
-        let devices_clone = {
+        let mut devices_clone = {
             let devs = devices.lock();
             devs.missing.clone()    // clone and release the lock
         };
 
-        let message = {
+        let f = {
             let encrypted = storage.encrypt_for_devices(&bytes, &devices_clone);
-            MessageRequest {
-                sender: &self.client,
+            let msg = MessageRequest {
+                sender: &self.client_id,
                 recipients: encrypted,
-            }
+            };
+
+            self.send_message(&client, msg, false)
         };
 
-        let client_clone = self.clone();
-        let client = client.clone();
-        let mut devices_clone = devices_clone.clone();      // BAAAHHH!!!
+        let bot_client = self.clone();
+        let hyper_client = client.clone();
 
-        info!("Sending encrypted message...");
-        let f = self.send_message(&client, message, false);
         let f = f.and_then(move |stat| match stat {
             MessageStatus::Sent =>
                 Box::new(future::ok(())) as BerylliumFuture<()>,
             MessageStatus::Failed(devs) => {
                 info!("Getting prekeys for missing devices...");
-                let f = client_clone.get_prekeys(&client, &devs.missing);
+                let f = bot_client.get_prekeys(&hyper_client, &devs.missing);
                 let f = f.and_then(move |keys| {
                     let mut new_data = HashMap::with_capacity(keys.len());
                     for (user_id, clients) in &keys {
@@ -171,11 +174,11 @@ impl HttpsClient {
 
                     devices.lock().missing = devices_clone;
                     let message = MessageRequest {
-                        sender: &client_clone.client,
+                        sender: &bot_client.client_id,
                         recipients: new_data,
                     };
 
-                    let f = client_clone.send_message(&client, message, false);
+                    let f = bot_client.send_message(&hyper_client, message, false);
                     let f = f.and_then(move |stat| {
                         match stat {
                             MessageStatus::Sent => future::ok(()),
@@ -196,6 +199,7 @@ impl HttpsClient {
         Box::new(f)
     }
 
+    /// Send confirmation message that we've received a message from conversation.
     pub fn send_confirmation(&self, client: &HyperClient,
                              message_id: &str,
                              storage: Arc<StorageManager>,
@@ -218,17 +222,17 @@ impl<'a> From<&'a BotCreationData> for HttpsClient {
     fn from(data: &'a BotCreationData) -> HttpsClient {
         HttpsClient {
             auth_token: data.token.to_owned(),
-            client: data.client.clone(),
+            client_id: data.client.clone(),
         }
     }
 }
 
 pub struct BotData {
-    // Arc'd stuff will be shared with the `BotClient` for sending encrypted messages.
-    // Mutex'ed stuff will be shared with the global handler itself.
     pub storage: Arc<StorageManager>,
     pub data: BotCreationData,
     pub client: HttpsClient,
+    /// `Arc<Mutex<T>>` because it's shared with the global bot data.
+    /// Whenever we get new devices, we'll update this.
     pub devices: Arc<Mutex<Devices>>,
 }
 
@@ -245,8 +249,8 @@ impl BotData {
     }
 }
 
-// Another client for isolating internal methods from user methods.
 #[derive(Clone)]
+/// User client to execute bot actions.
 pub struct BotClient {
     inner: HttpsClient,
     sender: String,
@@ -268,6 +272,7 @@ impl<'a> From<(&'a BotData, &'a FutureSender<EventLoopRequest<()>>)> for BotClie
 }
 
 impl BotClient {
+    /// Send a user text message to the conversation associated with the bot instance.
     pub fn send_message(&self, text: &str) {
         let text = text.to_owned();
         let (client, storage, devices) =

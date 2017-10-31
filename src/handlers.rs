@@ -23,16 +23,32 @@ use uuid::Uuid;
 // - Revisit `clone` usage on various types.
 // - Revisit usage of Arc's, Mutex'es and event loop handles.
 
+// FIXME: I've used a lot of Arcs throughout. I *know* that Arc has an overhead,
+// but I'm not entirely sure about the performance impact of this in our case
+// (i.e., HTTP requests).
+
+/// This trait should be implemented by your type in order to be
+/// notified by conversation events.
 pub trait Handler: Send + Sync + 'static {
     fn handle(&self, data: EventData, client: BotClient);
 }
 
-// FIXME: I *know* that Arc has an overhead, but I'm not entirely
-// sure about the performance impact of this in our case (i.e., HTTP requests)
+/// The global handler which handles incoming service requests.
 pub struct BotHandler<H> {
+    /// User handler.
     handler: Arc<H>,
+    /// We have a CPU pool because, the user handler could consume
+    /// more time, and so we don't wanna make the response wait for it.
+    /// In this case, we just spawn the handler into the pool.
     pool: Arc<CpuPool>,
+    /// Data of all bot instances. We have `Arc<Mutex<T>>` because firstly,
+    /// this is shared between multiple contexts. And second, individual bot data
+    /// could be shared between multiple requests. Imagine two conversations
+    /// happening with two bot instances. In such a situation, one bot request
+    /// shouldn't affect the other's response.
     bot_data: Arc<Mutex<HashMap<Uuid, Arc<Mutex<BotData>>>>>,
+    /// Any bot request to Wire server is queued into the event loop
+    /// using this sender.
     event_loop_sender: FutureSender<EventLoopRequest<()>>,
 }
 
@@ -72,6 +88,7 @@ impl<H: Handler> Service for BotHandler<H> {
             }
         }
 
+        // Macro workaround because all functions have different arguments.
         macro_rules! parse_json_and {
             ($call:expr $( , $arg:expr )*) => {{
                 let f = utils::acquire_body(&headers, body).map(|vec| {
@@ -152,7 +169,8 @@ fn handle_events<H>(pool: Arc<CpuPool>, job_sender: FutureSender<EventLoopReques
     // NOTE: parking_lot's Mutex is suitable for fine-grained locks, so we
     // acquire and release the lock quite a lot of times below.
 
-    // Maybe we've rebooted our bot and we don't have the creation data in memory.
+    // Maybe this is the first time we're getting events, or we've rebooted
+    // our bot and we don't have the creation data in memory.
     let this_bot_data = if bot_data.lock().get(&bot_id).is_none() {
         let this_bot_data = BotData::from_storage(bot_id)?;
         let this_bot_data = Arc::new(Mutex::new(this_bot_data));
@@ -180,13 +198,14 @@ fn handle_events<H>(pool: Arc<CpuPool>, job_sender: FutureSender<EventLoopReques
 
             // We can decrypt and decode the message - 200 OK
             let msg_id = message.get_message_id().to_owned();
+            // Async queue confirmation into event loop.
             job_sender.clone().send(Box::new(move |c: &HyperClient| {
                 client.send_confirmation(c, &msg_id, storage.clone(), devices.clone())
             })).wait().map_err(|e| {
                 error!("Cannot queue confirmation message in event loop: {}", e);
             }).ok();
 
-            if message.has_text() {     // FIXME: Handle images
+            if message.has_text() {     // FIXME: Handle other message types
                 info!("Got text message.");
                 let mut text = message.take_text();
                 let content = text.take_content();
@@ -204,10 +223,10 @@ fn handle_events<H>(pool: Arc<CpuPool>, job_sender: FutureSender<EventLoopReques
 
         (ConversationEventType::MemberJoin,
          &ConversationData::LeavingOrJoiningMembers { ref user_ids }) => {
-            // FIXME: What if we don't have the devices of these members?
             let conversation = {
                 let mut old_data = this_bot_data.lock();
-                // Add users to existing data
+                // Add users to existing data. If we don't have their devices
+                // we'll get the prekeys when we fail to send a message.
                 for id in user_ids {
                     old_data.data.conversation.members.insert(Member {
                         id: *id,
@@ -232,7 +251,7 @@ fn handle_events<H>(pool: Arc<CpuPool>, job_sender: FutureSender<EventLoopReques
          &ConversationData::LeavingOrJoiningMembers { ref user_ids }) => {
             let conversation = {
                 let mut old_data = this_bot_data.lock();
-                // Remove users from existing data
+                // Remove users from existing data.
                 for id in user_ids {
                     old_data.data.conversation.members.remove(id);
                 }
@@ -284,6 +303,7 @@ fn handle_events<H>(pool: Arc<CpuPool>, job_sender: FutureSender<EventLoopReques
             BotClient::from((&*lock, &job_sender))
         };
 
+        // Call the user handler in context of the futures pool (async).
         let handle: CpuFuture<(), ()> = pool.spawn_fn(move || {
             info!("Handling user event...");
             handler.handle(event_data, client);

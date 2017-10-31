@@ -12,6 +12,7 @@ use uuid::ParseError as UuidError;
 
 pub type BerylliumResult<T> = Result<T, BerylliumError>;
 
+/// Global error which encapsulates all related errors.
 #[derive(Debug)]
 pub enum BerylliumError {
     Io(io::Error),

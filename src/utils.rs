@@ -32,6 +32,7 @@ pub fn check_auth_token(token: &str) -> bool {
     *AUTH_TOKEN.read() == token
 }
 
+/// Return a `Future` that acquires the accumulated request body.
 /// FIXME: Prone to DDoS attack! Restrict content length?
 pub fn acquire_body(headers: &Headers, body: Body)
                    -> Box<Future<Item=Vec<u8>, Error=HyperError>> {
@@ -48,6 +49,7 @@ pub fn acquire_body(headers: &Headers, body: Body)
     Box::new(f)
 }
 
+/// ... only to map the `HyperError` with `BerylliumError`
 #[inline]
 pub fn acquire_body_with_err(headers: &Headers, body: Body)
                             -> BerylliumFuture<Vec<u8>> {
