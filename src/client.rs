@@ -245,6 +245,7 @@ impl HttpsClient {
     }
 
     /// Upload a given asset to Wire servers and return the asset key and token.
+    /// Note that the `asset_data` is encrypted at this point.
     fn upload_asset<T>(&self, client: &HyperClient, req_data: T,
                        asset_data: &[u8], asset_type: ContentType)
                        -> BerylliumFuture<AssetData>
@@ -373,21 +374,22 @@ impl BotClient {
         }).ok();
     }
 
-    /// Send an user image to the associated conversation.
-    pub fn send_image(&self, img: Image) {
+    /// Send an user image to the associated conversation. Use the exported
+    /// `Image` to open an image (from path, reader, or buffer).
+    pub fn send_image(&self, img: Arc<Image>) {
         let (client, storage, devices) =
             (self.inner.clone(), self.storage.clone(), self.devices.clone());
 
         let call_closure = Box::new(move |c: &HyperClient| {
-            let enc_data = future_try_box!(utils::encrypt(&img.data));
-            let img_size = img.data.len();
-            let img = img.copy_without_data();
+            let enc_data = future_try_box!(utils::encrypt(img.data()));
+            let img_size = img.data().len();
+            let img_meta = img.metadata();
             let req_data = AssetUploadRequest {
                 public: false,
                 retention: "volatile",
             };
 
-            let f = client.upload_asset(c, req_data, &enc_data.data, img.fmt.into());
+            let f = client.upload_asset(c, req_data, &enc_data.data, img_meta.format.into());
             let (c, client, storage, devices) =
                 (c.clone(), client.clone(), storage.clone(), devices.clone());
 
@@ -397,11 +399,11 @@ impl BotClient {
                 message.set_message_id(uuid.to_string());
                 let mut asset = Asset::new();
                 let mut original = Asset_Original::new();
-                original.set_mime_type(img.fmt.mime());
+                original.set_mime_type(img_meta.format.mime());
                 original.set_size(img_size as u64);
                 let mut meta = Asset_ImageMetaData::new();
-                meta.set_width(img.width as i32);
-                meta.set_height(img.height as i32);
+                meta.set_width(img_meta.width as i32);
+                meta.set_height(img_meta.height as i32);
                 original.set_image(meta);
                 asset.set_original(original);
                 let mut upload_data = Asset_RemoteData::new();

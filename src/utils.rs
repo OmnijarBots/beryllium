@@ -80,6 +80,7 @@ macro_rules! future_try_box {
     };
 }
 
+/// Helper struct for writing multipart data.
 pub struct MultipartWriter {
     boundary: String,
     inner: Vec<u8>,
@@ -123,11 +124,16 @@ impl MultipartWriter {
     }
 }
 
+/// Even though MD5 is broken, the Content-Md5 header is used by
+/// Wire in multipart request for some reason.
 pub fn md5_hash(data: &[u8]) -> Vec<u8> {
     let digest = Md5::digest(data);
     Vec::from(digest.as_slice())
 }
 
+/// Encrypt the given data with AES cipher (256 bits) in CBC mode
+/// (with the initialization vector at the start). Also compute the
+/// SHA-256 hash of the ciphertext.
 pub fn encrypt(data: &[u8]) -> BerylliumResult<EncryptData> {
     let cipher = Cipher::aes_256_cbc();
     let mut iv = vec![0; cipher.iv_len().unwrap()];     // 16 bytes
