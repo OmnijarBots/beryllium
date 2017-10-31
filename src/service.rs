@@ -1,3 +1,4 @@
+use {openssl, utils};
 use errors::{BerylliumError, BerylliumResult};
 use futures::{Future, Stream};
 use futures::sync::mpsc as futures_mpsc;
@@ -17,7 +18,6 @@ use tokio_core::reactor::Core;
 use tokio_rustls::proto::Server;
 use tokio_proto::TcpServer;
 use types::EventLoopRequest;
-use utils;
 
 pub struct BotService {
     config: ServerConfig,
@@ -58,6 +58,7 @@ impl BotService {
                   -> BerylliumResult<BotService>
         where P: AsRef<Path>
     {
+        openssl::init();
         let certs = Self::load_certs(cert_path)?;
         let key = Self::load_private_key(key_path)?;
         let mut tls_config = ServerConfig::new();

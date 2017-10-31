@@ -2,6 +2,8 @@ use base64::DecodeError as B64DecodeError;
 use cryptobox::CBoxError;
 use cryptobox::store::file::FileStore;
 use hyper::Error as HyperError;
+use image::ImageError;
+use openssl::error::ErrorStack;
 use proteus::{DecodeError, EncodeError};
 use protobuf::error::ProtobufError;
 use serde_json::error::Error as SerdeError;
@@ -17,9 +19,11 @@ pub type BerylliumResult<T> = Result<T, BerylliumError>;
 pub enum BerylliumError {
     Io(io::Error),
     CBox(CBoxError<FileStore>),
+    Openssl(ErrorStack),
     Encode(EncodeError),
     Decode(DecodeError),
     Hyper(HyperError),
+    Image(ImageError),
     PemFileError,
     Serde(SerdeError),
     Base64(B64DecodeError),
@@ -34,8 +38,10 @@ impl Display for BerylliumError {
         match *self {
             BerylliumError::CBox(ref e)     => write!(f, "Cryptobox error: {}", e),
             BerylliumError::Io(ref e)       => write!(f, "I/O error: {}", e),
+            BerylliumError::Openssl(ref e)  => write!(f, "Openssl error: {}", e),
             BerylliumError::Encode(ref e)   => write!(f, "Encode error: {}", e),
             BerylliumError::Decode(ref e)   => write!(f, "Decode error: {}", e),
+            BerylliumError::Image(ref e)    => write!(f, "Image error: {}", e),
             BerylliumError::Hyper(ref e)    => write!(f, "Hyper error: {}", e),
             BerylliumError::PemFileError    => f.write_str("PEM file error"),
             BerylliumError::Serde(ref e)    => write!(f, "Serde error: {}", e),
@@ -43,7 +49,7 @@ impl Display for BerylliumError {
             BerylliumError::Protobuf(ref e) => write!(f, "Protobuf error: {}", e),
             BerylliumError::Uuid(ref e)     => write!(f, "UUID parse error: {}", e),
             BerylliumError::Other(ref e)    => write!(f, "Unknown error: {}", e),
-            BerylliumError::Unreachable     => write!(f, "Entered unreachable code!"),
+            BerylliumError::Unreachable     => f.write_str("Entered unreachable code!"),
         }
     }
 }
@@ -56,6 +62,8 @@ impl Error for BerylliumError {
     fn cause(&self) -> Option<&Error> {
         match *self {
             BerylliumError::CBox(ref e)     => Some(e),
+            BerylliumError::Openssl(ref e)  => Some(e),
+            BerylliumError::Image(ref e)    => Some(e),
             BerylliumError::Io(ref e)       => Some(e),
             BerylliumError::Decode(ref e)   => Some(e),
             BerylliumError::Encode(ref e)   => Some(e),
@@ -69,56 +77,24 @@ impl Error for BerylliumError {
     }
 }
 
-impl From<io::Error> for BerylliumError {
-    fn from(e: io::Error) -> BerylliumError {
-        BerylliumError::Io(e)
+macro_rules! impl_error {
+    ($err:ty => $ident:ident) => {
+        impl From<$err> for BerylliumError {
+            fn from(e: $err) -> BerylliumError {
+                BerylliumError::$ident(e)
+            }
+        }
     }
 }
 
-impl From<DecodeError> for BerylliumError {
-    fn from(e: DecodeError) -> BerylliumError {
-        BerylliumError::Decode(e)
-    }
-}
-
-impl From<EncodeError> for BerylliumError {
-    fn from(e: EncodeError) -> BerylliumError {
-        BerylliumError::Encode(e)
-    }
-}
-
-impl From<HyperError> for BerylliumError {
-    fn from(e: HyperError) -> BerylliumError {
-        BerylliumError::Hyper(e)
-    }
-}
-
-impl From<CBoxError<FileStore>> for BerylliumError {
-    fn from(e: CBoxError<FileStore>) -> BerylliumError {
-        BerylliumError::CBox(e)
-    }
-}
-
-impl From<SerdeError> for BerylliumError {
-    fn from(e: SerdeError) -> BerylliumError {
-        BerylliumError::Serde(e)
-    }
-}
-
-impl From<B64DecodeError> for BerylliumError {
-    fn from(e: B64DecodeError) -> BerylliumError {
-        BerylliumError::Base64(e)
-    }
-}
-
-impl From<ProtobufError> for BerylliumError {
-    fn from(e: ProtobufError) -> BerylliumError {
-        BerylliumError::Protobuf(e)
-    }
-}
-
-impl From<UuidError> for BerylliumError {
-    fn from(e: UuidError) -> BerylliumError {
-        BerylliumError::Uuid(e)
-    }
-}
+impl_error!(ImageError => Image);
+impl_error!(io::Error => Io);
+impl_error!(ErrorStack => Openssl);
+impl_error!(DecodeError => Decode);
+impl_error!(EncodeError => Encode);
+impl_error!(HyperError => Hyper);
+impl_error!(CBoxError<FileStore> => CBox);
+impl_error!(SerdeError => Serde);
+impl_error!(B64DecodeError => Base64);
+impl_error!(ProtobufError => Protobuf);
+impl_error!(UuidError => Uuid);
