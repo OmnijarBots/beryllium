@@ -6,7 +6,7 @@ use handlers::{BotHandler, Handler};
 use hyper::Client;
 use hyper::server::Http;
 use hyper_rustls::HttpsConnector;
-use rustls::{Certificate, PrivateKey, ServerConfig};
+use rustls::{Certificate, NoClientAuth, PrivateKey, ServerConfig};
 use rustls::internal::pemfile;
 use std::fs::File;
 use std::io::BufReader;
@@ -61,7 +61,8 @@ impl BotService {
         openssl::init();
         let certs = Self::load_certs(cert_path)?;
         let key = Self::load_private_key(key_path)?;
-        let mut tls_config = ServerConfig::new();
+        // We don't need client auth, because we're checking `Authorization` header.
+        let mut tls_config = ServerConfig::new(NoClientAuth::new());
         tls_config.set_single_cert(certs, key);
         utils::set_auth_token(auth);
         utils::set_store_path(store_path);
