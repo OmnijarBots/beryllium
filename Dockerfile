@@ -1,10 +1,13 @@
 FROM ekidd/rust-musl-builder:nightly
 
 RUN sudo apt-get update && \
-    sudo apt-get install -y unzip pkg-config && \
+    sudo apt-get install -y software-properties-common unzip pkg-config && \
+    sudo add-apt-repository "deb http://apt.llvm.org/xenial/ llvm-toolchain-xenial main" && \
+    sudo apt-get update && \
+    sudo apt-get install -y clang-4.0 && \
     sudo apt-get clean && sudo rm -rf /var/lib/apt/lists/*
 
-RUN VERSION=1.0.15 && \
+RUN VERSION=1.0.16 && \
     cd /home/rust/libs && \
     mkdir libsodium && \
     cd libsodium && \
